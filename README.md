@@ -13,7 +13,7 @@ npm install
 npm run dev
 ```
 
-Then open the address it prints (`http://localhost:5173/CompetitionBadgeGenerator/` by default). On Windows you can instead double-click `start-badge-designer.bat`, which installs what's missing, starts the app and opens it in the browser.
+Then open the address it prints (`http://localhost:5173/` by default). On Windows you can instead double-click `start-badge-designer.bat`, which installs what's missing, starts the app and opens it in the browser.
 
 Press `?` in the editor to see the keyboard shortcuts.
 
