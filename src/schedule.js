@@ -240,19 +240,24 @@ function buildBaseSchedule(wcif, timeZone = "UTC", { stageColors = {}, labels = 
 
   function shortened(name, code) {
     const eventId = code.split("-")[0];
-    if (name.includes(",")) {
+    // Only rounds follow "Event, Round n, Group m"; a custom activity's name
+    // can contain a comma without meaning anything.
+    if (eventId !== "other" && name.includes(",")) {
       const parts = name.split(", ");
+      // Rounds whose groups haven't been created yet are named just
+      // "Event, Round n", so the group part may be missing.
+      const groupSuffix = parts[2] ? ` - ${parts[2][0]}${parts[2].split(" ")[1]}` : "";
       if (parts[0] === "3x3x3 Multi-Blind") {
-        return `${eventText(eventId, parts[0], ABV)} - ${parts[2][0]}${parts[2].split(" ")[1]}`;
+        return `${eventText(eventId, parts[0], ABV)}${groupSuffix}`;
       }
 
       const roundNum = parseInt(parts[1].split(" ")[1], 10);
-      if (eventId !== "other" && roundNum === (roundAmounts[eventId] || 0)) {
+      if (roundNum === (roundAmounts[eventId] || 0)) {
         return `${eventText(eventId, parts[0], SUBSEQUENT_ROUND_NAMES)} Final`;
-      } else if (eventId !== "other" && roundNum > 1 && (groupAmounts[code] || 1) > 1) {
+      } else if (roundNum > 1 && ((groupAmounts[code] || 1) > 1 || !parts[2])) {
         return `${eventText(eventId, parts[0], SUBSEQUENT_ROUND_NAMES)} ${parts[1][0]}${parts[1].split(" ")[1]}`;
       } else {
-        return `${eventText(eventId, parts[0], ABV)} ${parts[1][0]}${parts[1].split(" ")[1]} - ${parts[2][0]}${parts[2].split(" ")[1]}`;
+        return `${eventText(eventId, parts[0], ABV)} ${parts[1][0]}${parts[1].split(" ")[1]}${groupSuffix}`;
       }
     } else if (/^[^-]+-r\d+/.test(code || "") && name.includes(" Round ")) {
       return shortenedFromCode(name, code);
