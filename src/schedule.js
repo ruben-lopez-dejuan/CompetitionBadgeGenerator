@@ -147,6 +147,27 @@ function eventNameOf(activityName) {
   return (activityName || "").split(", ")[0].split(" Round ")[0];
 }
 
+// Codes of the rounds (e.g. "333-r2") where somebody has an assignment.
+function roundsWithAssignments(wcif) {
+  const roundOfActivity = {};
+  const visit = (act) => {
+    const round = /^[^-]+-r\d+/.exec(act.activityCode || "");
+    if (round) roundOfActivity[act.id] = round[0];
+    (act.childActivities || []).forEach(visit);
+  };
+  for (const venue of wcif?.schedule?.venues || []) {
+    for (const room of venue.rooms || []) (room.activities || []).forEach(visit);
+  }
+
+  const rounds = new Set();
+  for (const person of wcif?.persons || []) {
+    for (const a of person.assignments || []) {
+      if (roundOfActivity[a.activityId]) rounds.add(roundOfActivity[a.activityId]);
+    }
+  }
+  return rounds;
+}
+
 /**
  * Every text the schedule table derives from the WCIF that the user can
  * rename (see the Schedule panel in BadgeDesigner.jsx): one entry per event
@@ -182,11 +203,15 @@ export function listScheduleTexts(wcif) {
     }
   }
 
+  const assignedRounds = roundsWithAssignments(wcif);
   const laterRounds = [];
   for (const event of wcif?.events || []) {
     const rounds = event.rounds || [];
     const eventName = eventNames[event.id] || event.id;
     rounds.slice(1).forEach((round, i) => {
+      // Merging is only for rows printing "QR"; one row can't hold the
+      // different task each group of an assigned round gives a person.
+      if (assignedRounds.has(round.id)) return;
       const roundNum = i + 2;
       const label = `${SUBSEQUENT_ROUND_NAMES[eventName] || eventName} ${roundNum === rounds.length ? "Final" : `R${roundNum}`}`;
       laterRounds.push({ code: round.id, label, groups: groupsByRound[round.id]?.size || 0 });
@@ -213,6 +238,7 @@ function buildBaseSchedule(wcif, timeZone = "UTC", { stageColors = {}, labels = 
   const mergedRoundCodes = new Set(mergedRounds);
   const eventLabels = labels.events || {};
   const activityLabels = labels.activities || {};
+  const assignedRounds = roundsWithAssignments(wcif);
   const roundAmounts = {};
   for (const event of wcif.events || []) {
     roundAmounts[event.id] = (event.rounds || []).length;
@@ -369,16 +395,17 @@ function buildBaseSchedule(wcif, timeZone = "UTC", { stageColors = {}, labels = 
 
     // Round > 1 of an event that has more than one round at all — these are
     // the rows where a badge can't print a fixed task, since who's assigned
-    // where in round 2+ isn't known at print time. eventId/roundNum parsed
-    // straight from the WCA activityCode format, e.g. "333-r2" -> event
-    // "333", round 2.
+    // where in round 2+ usually isn't known at print time. A round that does
+    // have assignments in the WCIF is a regular one, with real tasks.
+    // eventId/roundNum parsed straight from the WCA activityCode format,
+    // e.g. "333-r2" -> event "333", round 2.
     const [codeEventId, codeRoundPart] = (activity.activityCode || "").split("-");
     const codeRoundNum = codeRoundPart && codeRoundPart.startsWith("r") ? parseInt(codeRoundPart.slice(1), 10) : null;
-    const isSubsequentRound = codeEventId && codeEventId !== "other" && (roundAmounts[codeEventId] || 1) > 1 && codeRoundNum > 1;
+    const roundCode = `${codeEventId}-${codeRoundPart}`;
+    const isSubsequentRound = codeEventId && codeEventId !== "other" && (roundAmounts[codeEventId] || 1) > 1 && codeRoundNum > 1 && !assignedRounds.has(roundCode);
 
     // Merged later rounds share one key per round and day, and are labelled
     // as the round ("3x3x3 Final", "3x3x3 R2") rather than one of its groups.
-    const roundCode = `${codeEventId}-${codeRoundPart}`;
     const mergeIntoRound = isSubsequentRound && mergedRoundCodes.has(roundCode);
     const key = mergeIntoRound ? `${roundCode}_${day}` : `${activity.activityCode || `noCode_${activity.id}`}_${activity.startTime}`;
     const label = mergeIntoRound
@@ -566,9 +593,9 @@ export function buildGenericSchedule(wcif, timezoneOverride, options = {}) {
         color = round.colors[0];
       } else if (!isSpecial) {
         if (round.isSubsequentRound) {
-          // Round 2+ assignments genuinely aren't known before the
-          // competition for ANY competitor — so "QR" isn't a placeholder
-          // standing in for real data, it's the actual real answer.
+          // Nobody has an assignment in this round yet (see
+          // buildBaseSchedule), so "QR" isn't a placeholder standing in for
+          // real data, it's the actual real answer.
           // Doesn't consume a slot in the placeholder rotation below, and
           // stays untinted, as it prints.
           task = "QR";
