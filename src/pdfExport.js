@@ -1,4 +1,4 @@
-import { PDFDocument, rgb, StandardFonts, pushGraphicsState, popGraphicsState, concatTransformationMatrix } from "pdf-lib";
+import { PDFDocument, degrees, rgb, StandardFonts, pushGraphicsState, popGraphicsState, concatTransformationMatrix } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
 import QRCode from "qrcode";
 import { buildCompetitorSchedules, buildStageList } from "./schedule.js";
@@ -1254,6 +1254,69 @@ export async function generateBadgesPdf(state, wcif, onProgress) {
   }
 
   return pdfDoc.save();
+}
+
+// How 8 badges of this size (mm) fit on an A4 sheet: 4x2 on a landscape sheet
+// for portrait badges, 2x4 on a portrait sheet for landscape ones. Null when
+// they don't fit either way.
+export function eightPerSheetLayout(badgeW, badgeH) {
+  const options = [
+    { sheetW: 297, sheetH: 210, cols: 4, rows: 2 },
+    { sheetW: 210, sheetH: 297, cols: 2, rows: 4 },
+  ];
+  const EPSILON = 0.01;
+  return options.find((o) => badgeW * o.cols <= o.sheetW + EPSILON && badgeH * o.rows <= o.sheetH + EPSILON) || null;
+}
+
+// Turns a generateBadgesPdf() file (front, back, front, back...) into sheets
+// of 8 fronts, each followed by a sheet with their 8 backs, for double-sided
+// printing flipped on the short edge. The grid is centered, so a back lands
+// exactly behind its front on both sides of the sheet.
+export async function imposeEightPerSheet(bytes) {
+  const source = await PDFDocument.load(bytes);
+  const out = await PDFDocument.create();
+  const pages = await out.embedPdf(bytes, source.getPageIndices());
+
+  const cellW = Math.max(...pages.map((p) => p.width));
+  const cellH = Math.max(...pages.map((p) => p.height));
+  const layout = eightPerSheetLayout(cellW / mmv(1), cellH / mmv(1));
+  if (!layout) throw new Error("8 badges of this size don't fit on an A4 sheet.");
+
+  const { cols, rows } = layout;
+  const sheetW = mmv(layout.sheetW);
+  const sheetH = mmv(layout.sheetH);
+  const marginX = (sheetW - cols * cellW) / 2;
+  const marginY = (sheetH - rows * cellH) / 2;
+  const isLandscapeSheet = layout.sheetW > layout.sheetH;
+
+  const drawInCell = (sheet, page, col, row, upsideDown) => {
+    const x = marginX + col * cellW + (cellW - page.width) / 2;
+    const y = sheetH - marginY - (row + 1) * cellH + (cellH - page.height) / 2;
+    if (upsideDown) sheet.drawPage(page, { x: x + page.width, y: y + page.height, rotate: degrees(180) });
+    else sheet.drawPage(page, { x, y });
+  };
+
+  const perSheet = cols * rows;
+  const badgeCount = Math.ceil(pages.length / 2);
+  for (let first = 0; first < badgeCount; first += perSheet) {
+    const frontSheet = out.addPage([sheetW, sheetH]);
+    const backSheet = out.addPage([sheetW, sheetH]);
+    for (let i = 0; i < perSheet && first + i < badgeCount; i++) {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      drawInCell(frontSheet, pages[(first + i) * 2], col, row, false);
+      const back = pages[(first + i) * 2 + 1];
+      if (!back) continue;
+      // The short edge is the left/right one on a landscape sheet: it turns
+      // like a book page, so columns swap and the backs stay upright. On a
+      // portrait sheet it turns over the top edge, so rows swap and the backs
+      // go upside down, to read upright when the badge is turned sideways.
+      if (isLandscapeSheet) drawInCell(backSheet, back, cols - 1 - col, row, false);
+      else drawInCell(backSheet, back, col, rows - 1 - row, true);
+    }
+  }
+
+  return out.save();
 }
 
 export function downloadPdfBytes(bytes, filename = "print_ready.pdf") {

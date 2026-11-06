@@ -54,7 +54,7 @@ import {
   AlignVerticalDistributeCenter,
 } from "lucide-react";
 import { buildCompetitorSchedules, buildGenericSchedule, buildStageList, listScheduleTexts, resolveScheduleTimezone } from "./schedule.js";
-import { generateBadgesPdf, downloadPdfBytes } from "./pdfExport.js";
+import { generateBadgesPdf, downloadPdfBytes, eightPerSheetLayout, imposeEightPerSheet } from "./pdfExport.js";
 import defaultTemplate from "./defaultTemplate.json";
 import { applyTextCase, DEFAULT_FRAME, layoutTextFrame, shrinkToWidth } from "./textLayout.js";
 import { FULL_CROP, isFullCrop, normalizeCrop, placeImage } from "./imageCrop.js";
@@ -750,6 +750,8 @@ function inflateTemplate(data) {
     mbldSubmission: { enabled: false, task: "C", hideForOthers: false, ...(data.mbld_submission || {}) },
     // Later rounds shown as one row instead of one per group (see buildBaseSchedule).
     mergedRounds: data.merged_rounds || [],
+    // "single" (one badge per page) or "eight" (8 per A4 sheet, double-sided).
+    printLayout: data.print_layout || "single",
     fonts: inflatedFonts,
     front: inflateSide(data.front, 105, 148),
     back: inflateSide(data.back, 148, 105),
@@ -824,6 +826,7 @@ export default function BadgeDesigner() {
   const [compIdInput, setCompIdInput] = useState("");
   const [showCompMenu, setShowCompMenu] = useState(false);
   const [showPageMenu, setShowPageMenu] = useState(false); // page settings, on narrow windows
+  const [showPrintMenu, setShowPrintMenu] = useState(false); // print layout, next to Generate PDF
   const [draggingFieldId, setDraggingFieldId] = useState(null); // layers list drag & drop
   // Ids of fields reaching past the safe margin, measured from what's
   // actually drawn (so auto-width text, alignment and rotation all count).
@@ -1774,6 +1777,7 @@ export default function BadgeDesigner() {
       schedule_labels: state.scheduleLabels,
       mbld_submission: state.mbldSubmission,
       merged_rounds: state.mergedRounds,
+      print_layout: state.printLayout,
       fonts: fontsManifest,
       front: {
         page: state.front.page,
@@ -1803,16 +1807,28 @@ export default function BadgeDesigner() {
     URL.revokeObjectURL(url);
   };
 
+  const eightPerSheetFits = !!eightPerSheetLayout(
+    Math.max(state.front.page.width_mm, state.back.page.width_mm),
+    Math.max(state.front.page.height_mm, state.back.page.height_mm)
+  );
+
   const generateAllBadges = async () => {
     if (!state.wcif) {
       setActiveTab("competition");
       alert("Load a competition first (Competition tab) — the PDF is built from real competitors, not the sample preview data.");
       return;
     }
+    const eightPerSheet = state.printLayout === "eight";
+    if (eightPerSheet && !eightPerSheetFits) {
+      setShowPrintMenu(true);
+      alert("8 badges of this size don't fit on an A4 sheet. Make the badge smaller or print one badge per page.");
+      return;
+    }
     setGenerating({ done: 0, total: 0 });
     try {
       const bytes = await generateBadgesPdf(state, state.wcif, (done, total) => setGenerating({ done, total }));
-      downloadPdfBytes(bytes, `${state.wcif.id || "badges"}_print_ready.pdf`);
+      if (eightPerSheet) downloadPdfBytes(await imposeEightPerSheet(bytes), `${state.wcif.id || "badges"}_print_ready_8_per_sheet.pdf`);
+      else downloadPdfBytes(bytes, `${state.wcif.id || "badges"}_print_ready.pdf`);
       setGenerating(null);
     } catch (err) {
       console.error(err);
@@ -2060,15 +2076,33 @@ export default function BadgeDesigner() {
         <button onClick={exportTemplate} className={`${iconButton} flex items-center gap-1.5 text-sm px-2.5`} title="Save template.json (Ctrl+S)">
           <Save size={15} /> <span className="hidden lg:inline">Save</span>
         </button>
-        <button
-          onClick={generateAllBadges}
-          disabled={!!generating}
-          title={state.wcif ? `Generate badges for everyone in ${state.wcif.name || state.wcif.id}` : "Load a competition first"}
-          className="flex items-center gap-1.5 text-sm font-medium px-3.5 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed"
-        >
-          <Printer size={14} />
-          {generating ? (generating.total ? `Generating ${generating.done}/${generating.total}…` : "Starting…") : "Generate PDF"}
-        </button>
+        <div className="relative flex">
+          <button
+            onClick={generateAllBadges}
+            disabled={!!generating}
+            title={state.wcif ? `Generate badges for everyone in ${state.wcif.name || state.wcif.id}` : "Load a competition first"}
+            className="flex items-center gap-1.5 text-sm font-medium px-3.5 py-1.5 bg-blue-600 text-white rounded-l-md hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            <Printer size={14} />
+            {generating ? (generating.total ? `Generating ${generating.done}/${generating.total}…` : "Starting…") : "Generate PDF"}
+          </button>
+          <button
+            onClick={() => setShowPrintMenu((open) => !open)}
+            title="Print layout"
+            aria-label="Print layout"
+            className="flex items-center px-1.5 bg-blue-600 text-white rounded-r-md border-l border-blue-500 hover:bg-blue-700"
+          >
+            <ChevronDown size={14} />
+          </button>
+          {showPrintMenu && (
+            <PrintLayoutMenu
+              layout={state.printLayout}
+              eightFits={eightPerSheetFits}
+              onChange={(printLayout) => setState((prev) => ({ ...prev, printLayout }), "printLayout")}
+              onClose={() => setShowPrintMenu(false)}
+            />
+          )}
+        </div>
       </div>
 
       <div className="flex flex-1 min-h-0">
@@ -2454,6 +2488,29 @@ function CompetitionMenu({ loaded, onLoadId, onOpenFile, onManage, onClose }) {
             Role mapping, schedule and stage colors for {loaded.name || loaded.id} →
           </button>
         )}
+      </div>
+    </>
+  );
+}
+
+function PrintLayoutMenu({ layout, eightFits, onChange, onClose }) {
+  const option = (value, title, disabled) => (
+    <label className={`flex items-start gap-2 ${disabled ? "text-neutral-400" : "cursor-pointer"}`}>
+      <input type="radio" name="print-layout" className="mt-0.5" checked={layout === value} disabled={disabled} onChange={() => onChange(value)} />
+      <span>{title}</span>
+    </label>
+  );
+  return (
+    <>
+      <div className="fixed inset-0 z-30" onPointerDown={onClose} />
+      <div className="absolute right-0 top-full mt-1.5 z-40 w-72 bg-white rounded-lg shadow-xl border border-neutral-200 p-3 space-y-2 text-sm">
+        <div className="text-[11px] font-semibold text-neutral-500">Print layout</div>
+        {option("single", "One badge per page", false)}
+        {option("eight", "8 badges per A4 sheet", !eightFits && layout !== "eight")}
+        {layout === "eight" && eightFits && (
+          <div className="text-[11px] text-neutral-500 leading-relaxed">Print double-sided, flip on the short edge, at actual size (100%). Each back lands behind its front.</div>
+        )}
+        {!eightFits && <div className="text-[11px] text-amber-700 leading-relaxed">8 badges of this size don't fit on an A4 sheet: the most is 74.25 × 105 mm or 105 × 74.25 mm.</div>}
       </div>
     </>
   );
