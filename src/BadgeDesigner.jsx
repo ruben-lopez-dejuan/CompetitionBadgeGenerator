@@ -698,7 +698,7 @@ function inflateSide(s, fallbackW, fallbackH) {
 }
 // The global settings schedule.js's builders take (see buildBaseSchedule).
 function scheduleOptions(s) {
-  return { stageColors: s.stageColors, labels: s.scheduleLabels, mbldSubmission: s.mbldSubmission, mergedRounds: s.mergedRounds };
+  return { stageColors: s.stageColors, labels: s.scheduleLabels, mbldSubmission: s.mbldSubmission, mergedRounds: s.mergedRounds, showExtraTasks: s.showExtraTasks };
 }
 
 function inflateTemplate(data) {
@@ -744,6 +744,8 @@ function inflateTemplate(data) {
     mbldSubmission: { enabled: false, task: "C", hideForOthers: false, ...(data.mbld_submission || {}) },
     // Later rounds shown as one row instead of one per group (see buildBaseSchedule).
     mergedRounds: data.merged_rounds || [],
+    // Rows for tasks that aren't in the schedule (see extraTasks in schedule.js).
+    showExtraTasks: data.show_extra_tasks ?? true,
     // "single" (one badge per page) or "eight" (8 per A4 sheet, double-sided).
     printLayout: data.print_layout || "single",
     fonts: inflatedFonts,
@@ -1779,6 +1781,7 @@ export default function BadgeDesigner() {
       schedule_labels: state.scheduleLabels,
       mbld_submission: state.mbldSubmission,
       merged_rounds: state.mergedRounds,
+      show_extra_tasks: state.showExtraTasks,
       print_layout: state.printLayout,
       fonts: fontsManifest,
       front: {
@@ -2268,6 +2271,8 @@ export default function BadgeDesigner() {
                     onMbldChange={updateMbldSubmission}
                     mergedRounds={state.mergedRounds}
                     onMergedRoundsChange={(codes) => updateScheduleSettings({ mergedRounds: codes })}
+                    showExtraTasks={state.showExtraTasks}
+                    onShowExtraTasksChange={(showExtraTasks) => updateScheduleSettings({ showExtraTasks })}
                   />
                   <StageColorsPanel stages={state.sampleData.stages || []} stageColors={state.stageColors} onChange={setStageColor} />
                 </div>
@@ -3193,7 +3198,7 @@ function RoleMappingPanel({ roleMapping, onChange, persons }) {
 // Global schedule settings: renames for the texts the WCIF produces, and the
 // MBLD cube submission task. Per-table settings (day, title, column
 // headers, hidden activities) stay on each schedule field.
-function SchedulePanel({ texts, labels, onLabelChange, mbldSubmission, onMbldChange, mergedRounds, onMergedRoundsChange }) {
+function SchedulePanel({ texts, labels, onLabelChange, mbldSubmission, onMbldChange, mergedRounds, onMergedRoundsChange, showExtraTasks, onShowExtraTasksChange }) {
   const merged = new Set(mergedRounds);
   const toggleRound = (code) => {
     const next = new Set(merged);
@@ -3282,6 +3287,19 @@ function SchedulePanel({ texts, labels, onLabelChange, mbldSubmission, onMbldCha
           People assigned to the submission itself (e.g. staff collecting cubes) get their usual task letter. Competitors get the task above for each attempt they're assigned to compete in — or, before groups exist, if they're registered for MBLD.
         </div>
       </div>
+
+      {texts?.activities.some((a) => a.extra) && (
+        <div className="space-y-2 border-t border-neutral-200 pt-3">
+          <div className="text-[11px] font-semibold text-neutral-600">Tasks outside the schedule</div>
+          <label className="flex items-center gap-2 text-xs">
+            <input type="checkbox" checked={showExtraTasks} onChange={(e) => onShowExtraTasksChange(e.target.checked)} />
+            Show them
+          </label>
+          <div className="text-[10px] text-neutral-400">
+            Tasks with no activity or stage, such as setups, from Competition Groups. Each one is a row only for the people who have it; the preview shows the most anyone has each day. Rename them under "Other activities".
+          </div>
+        </div>
+      )}
 
       {texts ? (
         <>
