@@ -283,6 +283,10 @@ export function listScheduleTexts(wcif) {
     });
   }
 
+  for (const { staff } of (wcif?.persons || []).flatMap(extraTasks)) {
+    if (!activities.has(staff)) activities.set(staff, { name: staff, defaultText: staff, extra: true });
+  }
+
   const taskCounts = {};
   for (const person of wcif?.persons || []) {
     for (const a of person.assignments || []) {
@@ -305,6 +309,8 @@ export function listScheduleTexts(wcif) {
  * - mbldSubmission: { enabled, task, hideForOthers } — show the MBLD cube
  *   submission as a task for the people competing in MBLD (see
  *   buildCompetitorSchedules).
+ * - showExtraTasks: false leaves out the tasks that aren't in the schedule
+ *   (see extraTasks).
  * - mergedRounds: round codes (e.g. ["333-r4"]) shown as one row instead
  *   of one per group. Only applies to round 2+/finals — safe there because
  *   those rows print "QR" anyway, since who's in which group isn't known
@@ -558,6 +564,54 @@ function submitsMbldCubes(person, attempt, mbldAttempts) {
   return attempt == null || assigned.has(attempt) || assigned.has(0);
 }
 
+// Tasks outside the schedule (e.g. "Setup Side Room"): Competition Groups
+// keeps them on each person, as a name and times, with no activity or stage.
+function extraTasks(person) {
+  const ext = (person.extensions || []).find((e) => e.id === "com.competitiongroups.worldsassignments");
+  return (ext?.data?.assignments || []).filter((a) => a.staff && !Number.isNaN(Date.parse(a.startTime)));
+}
+
+// Extra tasks in the shape of buildBaseSchedule's rows, by day.
+function extraTaskRows(tasks, timeZone, options) {
+  const days = {};
+  if (options.showExtraTasks === false) return days;
+  const seen = new Set();
+  for (const a of tasks) {
+    const sortKey = Date.parse(a.startTime);
+    const id = `extra_${a.staff}_${sortKey}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    let day, time;
+    try {
+      ({ day, time } = formatInTimezone(a.startTime, timeZone));
+    } catch {
+      [day, time] = new Date(sortKey).toISOString().slice(0, 16).split("T");
+    }
+    (days[day] ||= []).push({
+      time,
+      event: options.labels?.activities?.[a.staff] || a.staff,
+      activity_ids: [id],
+      parent_ids: [null],
+      colors: [null],
+      stages: [null],
+      activityCode: "other-extra",
+      sort_key: sortKey,
+    });
+  }
+  return days;
+}
+
+// Schedule fields pick their day by position, so a day only some people have
+// would shift theirs: tasks on days without a schedule are left out.
+function withExtraRows(baseSchedule, extraRows) {
+  const out = { ...baseSchedule };
+  for (const [day, rows] of Object.entries(extraRows)) {
+    if (!baseSchedule[day]) continue;
+    out[day] = [...(baseSchedule[day] || []), ...rows].sort((a, b) => a.sort_key - b.sort_key);
+  }
+  return out;
+}
+
 /**
  * Per-competitor schedules, with real assignment data. One row per round
  * (collapsed across parallel stages) per day; if the person is assigned to
@@ -589,8 +643,9 @@ export function buildCompetitorSchedules(wcif, timezoneOverride, options = {}) {
     }
 
     const personDays = {};
+    const personSchedule = withExtraRows(baseSchedule, extraTaskRows(extraTasks(person), timeZone, options));
 
-    for (const [day, rounds] of Object.entries(baseSchedule)) {
+    for (const [day, rounds] of Object.entries(personSchedule)) {
       personDays[day] = rounds.flatMap((round) => {
         let isSpecial = (round.activityCode || "").startsWith("other");
         let task = null;
@@ -611,11 +666,12 @@ export function buildCompetitorSchedules(wcif, timezoneOverride, options = {}) {
           } else if (mbld.hideForOthers) {
             return [];
           }
-        } else if (!isSpecial) {
+        } else {
           for (let i = 0; i < round.activity_ids.length; i++) {
             const assigned = assignmentsById[round.activity_ids[i]] || (round.parent_ids[i] && assignmentsById[round.parent_ids[i]]);
             if (assigned) {
               const rawCode = assigned.assignmentCode || "";
+              isSpecial = false; // an "other" activity is a task row for whoever is assigned to it
               taskCode = rawCode;
               task = taskLetter(rawCode, options.labels);
               color = round.colors[i];
@@ -668,8 +724,17 @@ export function buildGenericSchedule(wcif, timezoneOverride, options = {}) {
 
   const genericSchedule = {};
   let counter = 0;
+  // Each day's extra tasks are those of whoever has the most, so the design
+  // leaves room for the longest schedule.
+  const mostExtraRows = {};
+  for (const person of wcif.persons || []) {
+    for (const [day, rows] of Object.entries(extraTaskRows(extraTasks(person), timeZone, options))) {
+      if (rows.length > (mostExtraRows[day]?.length || 0)) mostExtraRows[day] = rows;
+    }
+  }
+  const fullSchedule = withExtraRows(baseSchedule, mostExtraRows);
 
-  for (const [day, rounds] of Object.entries(baseSchedule)) {
+  for (const [day, rounds] of Object.entries(fullSchedule)) {
     genericSchedule[day] = rounds.map((round) => {
       let isSpecial = (round.activityCode || "").startsWith("other");
       let task = null;

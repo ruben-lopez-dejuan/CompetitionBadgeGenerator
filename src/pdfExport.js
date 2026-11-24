@@ -1190,6 +1190,7 @@ export async function generateBadgesPdf(state, wcif, onProgress) {
     labels: state.scheduleLabels || {},
     mbldSubmission: state.mbldSubmission || {},
     mergedRounds: state.mergedRounds || [],
+    showExtraTasks: state.showExtraTasks,
   });
   const stages = buildStageList(wcif, state.stageColors || {});
 
