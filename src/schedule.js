@@ -52,7 +52,66 @@ const TASK_DISPLAY = {
   "staff-TableManager": "T",
 };
 
-const PLACEHOLDER_TASKS = ["C", "J", "S", "R"];
+const PLACEHOLDER_TASKS = ["competitor", "staff-judge", "staff-scrambler", "staff-runner"];
+
+// Letter a task prints as when the user hasn't chosen one. Custom
+// assignment codes ("staff-Caster") fall back to their first letter.
+function defaultTaskLetter(code) {
+  return TASK_DISPLAY[code] || (code || "").replace(/^staff-/, "").charAt(0).toUpperCase();
+}
+
+function taskLetter(code, labels) {
+  return labels?.tasks?.[code]?.trim() || defaultTaskLetter(code);
+}
+
+// Always in the Task Key, whatever the person does.
+const TASK_KEY_FIXED = ["competitor", "staff-judge", "staff-runner", "staff-scrambler"];
+
+const TASK_NAMES = {
+  "competitor": "Compete",
+  "staff-dataentry": "Data entry",
+};
+
+function defaultTaskName(code) {
+  const name = (code || "").replace(/^staff-/, "");
+  return TASK_NAMES[code] || name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+// The Task Key field's rows: the fixed tasks, then any other task in one
+// person's schedules (as built by buildCompetitorSchedules), in the order
+// they come up.
+export function taskKeyRows(labels, schedules = {}) {
+  const codes = new Set(TASK_KEY_FIXED);
+  for (const day of Object.keys(schedules).sort()) {
+    for (const row of schedules[day]) if (row.taskCode) codes.add(row.taskCode);
+  }
+  return [...codes].map((code) => ({
+    code: taskLetter(code, labels),
+    label: labels?.taskNames?.[code]?.trim() || defaultTaskName(code),
+  }));
+}
+
+// The stages one person's Task Key lists: all but the optional ones (see
+// buildStageList) they have no task in.
+export function stagesForPerson(stages, schedules) {
+  const used = new Set(
+    Object.values(schedules || {})
+      .flat()
+      .map((row) => row.stage)
+  );
+  return stages.filter((s) => !s.optional || used.has(s.name));
+}
+
+// The longest Task Key anyone in the competition gets, so the editor shows
+// the space it can take.
+export function longestTaskKeyRows(wcif, options = {}) {
+  let longest = taskKeyRows(options.labels);
+  for (const schedules of Object.values(buildCompetitorSchedules(wcif, undefined, options))) {
+    const rows = taskKeyRows(options.labels, schedules);
+    if (rows.length > longest.length) longest = rows;
+  }
+  return longest;
+}
 
 const DEFAULT_COLOR = "#1E5FD9";
 
@@ -73,6 +132,11 @@ function roomStages(room) {
 
 function activityStageId(activity) {
   return findNatshelperExtension(activity, "Group")?.data?.stageId ?? null;
+}
+
+// Name of the stage (or room) an activity is in, as in buildStageList.
+function activityStageName(activity, room, stagesById) {
+  return (stagesById[activityStageId(activity)] || room).name;
 }
 
 // Color an activity is shown in: its stage's color when the room is split
@@ -172,7 +236,8 @@ function roundsWithAssignments(wcif) {
  * Every text the schedule table derives from the WCIF that the user can
  * rename (see the Schedule panel in BadgeDesigner.jsx): one entry per event
  * (overriding the event part of all its rows, e.g. "3x3 OH" -> "OH") and one
- * per distinct non-event activity name (e.g. "Lunch" -> "Comida"). Also
+ * per distinct non-event activity name (e.g. "Lunch" -> "Comida"), and one
+ * per kind of assignment (its task letter, e.g. "staff-Caster" -> "CA"). Also
  * lists the later rounds (round 2+ of multi-round events) whose groups can
  * be merged into one row (see mergedRounds in buildBaseSchedule), with how
  * many groups each has.
@@ -218,13 +283,24 @@ export function listScheduleTexts(wcif) {
     });
   }
 
-  return { events: [...events.values()], activities: [...activities.values()], laterRounds };
+  const taskCounts = {};
+  for (const person of wcif?.persons || []) {
+    for (const a of person.assignments || []) {
+      if (a.assignmentCode) taskCounts[a.assignmentCode] = (taskCounts[a.assignmentCode] || 0) + 1;
+    }
+  }
+  const tasks = Object.entries(taskCounts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([code, count]) => ({ code, count, name: code.replace(/^staff-/, ""), defaultText: defaultTaskLetter(code), defaultName: defaultTaskName(code) }));
+
+  return { events: [...events.values()], activities: [...activities.values()], tasks, laterRounds };
 }
 
 /**
  * Options shared by the schedule builders below, all optional:
  * - stageColors: { [stageName]: hex } print colors replacing the WCA ones.
- * - labels: { events: { [eventId]: text }, activities: { [activityName]: text } }
+ * - labels: { events: { [eventId]: text }, activities: { [activityName]: text },
+ *   tasks: { [assignmentCode]: letter }, taskNames: { [assignmentCode]: text } }
  *   user renames, see listScheduleTexts.
  * - mbldSubmission: { enabled, task, hideForOthers } — show the MBLD cube
  *   submission as a task for the people competing in MBLD (see
@@ -342,6 +418,7 @@ function buildBaseSchedule(wcif, timeZone = "UTC", { stageColors = {}, labels = 
               startTime: act.startTime,
               activityCode: act.activityCode,
               color: activityColor(act, room, stagesById, stageColors),
+              stage: activityStageName(act, room, stagesById),
             });
           }
         }
@@ -356,6 +433,7 @@ function buildBaseSchedule(wcif, timeZone = "UTC", { stageColors = {}, labels = 
               startTime: child.startTime,
               activityCode: child.activityCode,
               color: activityColor(child, room, stagesById, stageColors),
+              stage: activityStageName(child, room, stagesById),
             });
           }
         }
@@ -427,6 +505,7 @@ function buildBaseSchedule(wcif, timeZone = "UTC", { stageColors = {}, labels = 
         activity_ids: [activity.id],
         parent_ids: [activity.parentId],
         colors: [activity.color],
+        stages: [activity.stage],
         activityCode: activity.activityCode,
         mbldAttempt: activity.activityCode === "other-multi" ? mbldSubmissionAttempt(activity.name) : null,
         isSubsequentRound,
@@ -437,6 +516,7 @@ function buildBaseSchedule(wcif, timeZone = "UTC", { stageColors = {}, labels = 
       row.activity_ids.push(activity.id);
       row.parent_ids.push(activity.parentId);
       row.colors.push(activity.color);
+      row.stages.push(activity.stage);
     }
   }
 
@@ -514,7 +594,9 @@ export function buildCompetitorSchedules(wcif, timezoneOverride, options = {}) {
       personDays[day] = rounds.flatMap((round) => {
         let isSpecial = (round.activityCode || "").startsWith("other");
         let task = null;
+        let taskCode = null; // the assignment behind `task`, for the Task Key
         let color = null;
+        let stage = null;
 
         if (mbld.enabled && round.activityCode === "other-multi") {
           const i = round.activity_ids.findIndex((id, k) => assignmentsById[id] || (round.parent_ids[k] && assignmentsById[round.parent_ids[k]]));
@@ -522,8 +604,10 @@ export function buildCompetitorSchedules(wcif, timezoneOverride, options = {}) {
           if (assigned || submitsMbldCubes(person, round.mbldAttempt, mbldAttempts)) {
             const rawCode = assigned?.assignmentCode || "competitor";
             isSpecial = false;
-            task = rawCode === "competitor" ? mbld.task || "C" : TASK_DISPLAY[rawCode] || rawCode.replace(/^staff-/, "").charAt(0).toUpperCase();
+            taskCode = rawCode;
+            task = rawCode === "competitor" ? mbld.task || "C" : taskLetter(rawCode, options.labels);
             color = round.colors[Math.max(i, 0)];
+            stage = round.stages[Math.max(i, 0)];
           } else if (mbld.hideForOthers) {
             return [];
           }
@@ -532,8 +616,10 @@ export function buildCompetitorSchedules(wcif, timezoneOverride, options = {}) {
             const assigned = assignmentsById[round.activity_ids[i]] || (round.parent_ids[i] && assignmentsById[round.parent_ids[i]]);
             if (assigned) {
               const rawCode = assigned.assignmentCode || "";
-              task = TASK_DISPLAY[rawCode] || rawCode.replace(/^staff-/, "").charAt(0).toUpperCase();
+              taskCode = rawCode;
+              task = taskLetter(rawCode, options.labels);
               color = round.colors[i];
+              stage = round.stages[i];
               break;
             }
           }
@@ -545,7 +631,9 @@ export function buildCompetitorSchedules(wcif, timezoneOverride, options = {}) {
             time: round.time,
             event: round.event,
             task,
+            taskCode,
             color,
+            stage,
             isSpecial,
             isSubsequentRound: !!round.isSubsequentRound,
             activityCode: round.activityCode,
@@ -600,7 +688,7 @@ export function buildGenericSchedule(wcif, timezoneOverride, options = {}) {
           // stays untinted, as it prints.
           task = "QR";
         } else {
-          task = PLACEHOLDER_TASKS[counter % PLACEHOLDER_TASKS.length];
+          task = taskLetter(PLACEHOLDER_TASKS[counter % PLACEHOLDER_TASKS.length], options.labels);
           color = round.colors[counter % round.colors.length];
           counter++;
         }
@@ -627,26 +715,37 @@ export function buildGenericSchedule(wcif, timezoneOverride, options = {}) {
  * each stage's name to the color it's shown in throughout the schedule
  * field. A room split into natshelper stages contributes its stages; a room
  * without them counts as a single stage itself (as in pre-stages WCIFs).
+ * A room with stages that also has groups outside them (e.g. staff working
+ * for the whole room) is listed too, last and marked `optional`: the Task
+ * Key only shows it to people with a task there (see stagesForPerson).
  * `color` is what gets printed (the user's override from stageColors, if
  * any); `wcaColor` is the one set on the WCA website, kept for resetting.
  */
 export function buildStageList(wcif, stageColors = {}) {
   const stages = [];
   const seen = new Set();
-  const push = (key, rawName, wcaColor) => {
+  const push = (key, rawName, wcaColor, extra = {}) => {
     if (seen.has(key)) return;
     seen.add(key);
-    stages.push({ name: rawName || `Stage ${stages.length + 1}`, color: stageColors[rawName] || wcaColor, wcaColor });
+    stages.push({ name: rawName || `Stage ${stages.length + 1}`, color: stageColors[rawName] || wcaColor, wcaColor, ...extra });
   };
+  const outsideStages = [];
   for (const venue of wcif.schedule?.venues || []) {
     for (const room of venue.rooms || []) {
       const subStages = roomStages(room);
       if (subStages.length > 0) {
         for (const stage of subStages) push(`stage-${stage.id}`, stage.name, stage.color || room.color || DEFAULT_COLOR);
+        const stageIds = new Set(subStages.map((s) => s.id));
+        const hasOutside = (room.activities || []).some((act) => {
+          if (/^other/.test(act.activityCode || "")) return false;
+          return (act.childActivities || []).some((child) => !stageIds.has(activityStageId(child)));
+        });
+        if (hasOutside && !subStages.some((s) => s.name === room.name)) outsideStages.push(room);
       } else {
         push(`room-${room.id}`, room.name, room.color || DEFAULT_COLOR);
       }
     }
   }
+  for (const room of outsideStages) push(`room-${room.id}`, room.name, room.color || DEFAULT_COLOR, { optional: true });
   return stages;
 }

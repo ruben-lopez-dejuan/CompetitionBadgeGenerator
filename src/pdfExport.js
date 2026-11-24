@@ -1,7 +1,7 @@
 import { PDFDocument, degrees, rgb, StandardFonts, pushGraphicsState, popGraphicsState, concatTransformationMatrix } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
 import QRCode from "qrcode";
-import { buildCompetitorSchedules, buildStageList } from "./schedule.js";
+import { buildCompetitorSchedules, buildStageList, stagesForPerson, taskKeyRows } from "./schedule.js";
 import { applyTextCase, breakPoints, layoutTextFrame } from "./textLayout.js";
 import { isFullCrop, placeImage } from "./imageCrop.js";
 import { personRole as matchPersonRole } from "./roles.js";
@@ -39,13 +39,6 @@ const SCHEDULE_COLORS = {
 };
 const TASKKEY_HEADER_H_MM = SCHEDULE_SUBHEADER_H_MM;
 const TASKKEY_ROW_H_MM = SCHEDULE_ROW_H_MM;
-const TASKKEY_TASKS = [
-  ["C", "Compete"],
-  ["J", "Judge"],
-  ["R", "Runner"],
-  ["S", "Scrambler"],
-];
-
 function hexToRgb01(hex) {
   const h = (hex || "#000000").replace("#", "");
   const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
@@ -754,12 +747,19 @@ function drawTaskKeyField(page, field, ctx, fonts, originX, originY) {
 
   const stages = ctx.stages && ctx.stages.length > 0 ? ctx.stages : [{ name: "Stage 1", color: "#1E5FD9" }, { name: "Stage 2", color: "#B8860B" }];
   const overrides = field.stageNames || [];
-  const stageRows = stages.map((s, i) => ({
-    name: normText(overrides[i] && overrides[i].trim() ? overrides[i].trim() : s.name),
-    color: s.color,
-  }));
+  // Name overrides go by position in the full list, so they're read before
+  // dropping the stages this person isn't shown.
+  const shown = new Set(stagesForPerson(stages, ctx.schedules));
+  const stageRows = stages
+    .map((s, i) => ({
+      stage: s,
+      name: normText(overrides[i] && overrides[i].trim() ? overrides[i].trim() : s.name),
+      color: s.color,
+    }))
+    .filter((row) => shown.has(row.stage));
 
-  const rowCount = Math.max(TASKKEY_TASKS.length, stageRows.length);
+  const taskRows = taskKeyRows(ctx.scheduleLabels, ctx.schedules).map((t) => [normText(t.code), normText(t.label)]);
+  const rowCount = Math.max(taskRows.length, stageRows.length);
   const totalHMm = TASKKEY_HEADER_H_MM + rowCount * TASKKEY_ROW_H_MM;
   const topY = originY;
   const rowH = mmv(TASKKEY_ROW_H_MM);
@@ -770,7 +770,7 @@ function drawTaskKeyField(page, field, ctx, fonts, originX, originY) {
   };
 
   // Pass 1: fills (always opaque — white by default) + text
-  [["Task", TASKKEY_TASKS], ["Stage", stageRows]].forEach(([label, items], col) => {
+  [["Task", taskRows], ["Stage", stageRows]].forEach(([label, items], col) => {
     const cx0 = x0 + col * half;
     page.drawRectangle({ x: cx0, y: topY - mmv(TASKKEY_HEADER_H_MM), width: half, height: mmv(TASKKEY_HEADER_H_MM), color: hexToRgb01(SCHEDULE_COLORS.subheaderBg) });
     centered(label, cx0 + half / 2, topY - mmv(TASKKEY_HEADER_H_MM) / 2, fonts.helveticaBold, SCHEDULE_FONT_SIZE);
@@ -783,7 +783,7 @@ function drawTaskKeyField(page, field, ctx, fonts, originX, originY) {
           const [code, meaning] = items[i];
           page.drawText(code, { x: cx0 + mmv(1.5), y: rowY - rowH / 2 - SCHEDULE_FONT_SIZE * 0.35, size: SCHEDULE_FONT_SIZE, font: fonts.helveticaBold });
           const eqW = fonts.helveticaBold.widthOfTextAtSize(`${code} = `, SCHEDULE_FONT_SIZE);
-          page.drawText(meaning, { x: cx0 + mmv(1.5) + eqW, y: rowY - rowH / 2 - SCHEDULE_FONT_SIZE * 0.35, size: SCHEDULE_FONT_SIZE, font: fonts.helvetica });
+          page.drawText(meaning, { x: cx0 + mmv(1.5) + eqW, y: rowY - rowH / 2 - SCHEDULE_FONT_SIZE * 0.35, size: SCHEDULE_FONT_SIZE, font: pickFont(fonts, fonts.helvetica, meaning) });
           page.drawText(" = ", { x: cx0 + mmv(1.5) + fonts.helveticaBold.widthOfTextAtSize(code, SCHEDULE_FONT_SIZE), y: rowY - rowH / 2 - SCHEDULE_FONT_SIZE * 0.35, size: SCHEDULE_FONT_SIZE, font: fonts.helveticaBold });
         }
       } else {
@@ -1212,6 +1212,7 @@ export async function generateBadgesPdf(state, wcif, onProgress) {
   for (let idx = 0; idx < persons.length; idx++) {
     const person = persons[idx];
     const ctx = buildPersonContext(person, state.sampleData, competitorSchedules, stages, state.roleMapping);
+    ctx.scheduleLabels = state.scheduleLabels;
 
     for (const sideKey of ["front", "back"]) {
       const sideTpl = state[sideKey];
