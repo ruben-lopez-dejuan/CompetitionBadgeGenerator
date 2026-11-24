@@ -52,7 +52,27 @@ const TASK_DISPLAY = {
   "staff-TableManager": "T",
 };
 
-const PLACEHOLDER_TASKS = ["C", "J", "S", "R"];
+const PLACEHOLDER_TASKS = ["competitor", "staff-judge", "staff-scrambler", "staff-runner"];
+
+// Letter a task prints as when the user hasn't chosen one. Custom
+// assignment codes ("staff-Caster") fall back to their first letter.
+function defaultTaskLetter(code) {
+  return TASK_DISPLAY[code] || (code || "").replace(/^staff-/, "").charAt(0).toUpperCase();
+}
+
+function taskLetter(code, labels) {
+  return labels?.tasks?.[code]?.trim() || defaultTaskLetter(code);
+}
+
+// The Task Key field's rows, with the user's letters.
+export function taskKeyRows(labels) {
+  return [
+    ["competitor", "Compete"],
+    ["staff-judge", "Judge"],
+    ["staff-runner", "Runner"],
+    ["staff-scrambler", "Scrambler"],
+  ].map(([code, label]) => ({ code: taskLetter(code, labels), label }));
+}
 
 const DEFAULT_COLOR = "#1E5FD9";
 
@@ -172,7 +192,8 @@ function roundsWithAssignments(wcif) {
  * Every text the schedule table derives from the WCIF that the user can
  * rename (see the Schedule panel in BadgeDesigner.jsx): one entry per event
  * (overriding the event part of all its rows, e.g. "3x3 OH" -> "OH") and one
- * per distinct non-event activity name (e.g. "Lunch" -> "Comida"). Also
+ * per distinct non-event activity name (e.g. "Lunch" -> "Comida"), and one
+ * per kind of assignment (its task letter, e.g. "staff-Caster" -> "CA"). Also
  * lists the later rounds (round 2+ of multi-round events) whose groups can
  * be merged into one row (see mergedRounds in buildBaseSchedule), with how
  * many groups each has.
@@ -218,14 +239,24 @@ export function listScheduleTexts(wcif) {
     });
   }
 
-  return { events: [...events.values()], activities: [...activities.values()], laterRounds };
+  const taskCounts = {};
+  for (const person of wcif?.persons || []) {
+    for (const a of person.assignments || []) {
+      if (a.assignmentCode) taskCounts[a.assignmentCode] = (taskCounts[a.assignmentCode] || 0) + 1;
+    }
+  }
+  const tasks = Object.entries(taskCounts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([code, count]) => ({ code, count, name: code.replace(/^staff-/, ""), defaultText: defaultTaskLetter(code) }));
+
+  return { events: [...events.values()], activities: [...activities.values()], tasks, laterRounds };
 }
 
 /**
  * Options shared by the schedule builders below, all optional:
  * - stageColors: { [stageName]: hex } print colors replacing the WCA ones.
- * - labels: { events: { [eventId]: text }, activities: { [activityName]: text } }
- *   user renames, see listScheduleTexts.
+ * - labels: { events: { [eventId]: text }, activities: { [activityName]: text },
+ *   tasks: { [assignmentCode]: letter } } user renames, see listScheduleTexts.
  * - mbldSubmission: { enabled, task, hideForOthers } — show the MBLD cube
  *   submission as a task for the people competing in MBLD (see
  *   buildCompetitorSchedules).
@@ -522,7 +553,7 @@ export function buildCompetitorSchedules(wcif, timezoneOverride, options = {}) {
           if (assigned || submitsMbldCubes(person, round.mbldAttempt, mbldAttempts)) {
             const rawCode = assigned?.assignmentCode || "competitor";
             isSpecial = false;
-            task = rawCode === "competitor" ? mbld.task || "C" : TASK_DISPLAY[rawCode] || rawCode.replace(/^staff-/, "").charAt(0).toUpperCase();
+            task = rawCode === "competitor" ? mbld.task || "C" : taskLetter(rawCode, options.labels);
             color = round.colors[Math.max(i, 0)];
           } else if (mbld.hideForOthers) {
             return [];
@@ -532,7 +563,7 @@ export function buildCompetitorSchedules(wcif, timezoneOverride, options = {}) {
             const assigned = assignmentsById[round.activity_ids[i]] || (round.parent_ids[i] && assignmentsById[round.parent_ids[i]]);
             if (assigned) {
               const rawCode = assigned.assignmentCode || "";
-              task = TASK_DISPLAY[rawCode] || rawCode.replace(/^staff-/, "").charAt(0).toUpperCase();
+              task = taskLetter(rawCode, options.labels);
               color = round.colors[i];
               break;
             }
@@ -600,7 +631,7 @@ export function buildGenericSchedule(wcif, timezoneOverride, options = {}) {
           // stays untinted, as it prints.
           task = "QR";
         } else {
-          task = PLACEHOLDER_TASKS[counter % PLACEHOLDER_TASKS.length];
+          task = taskLetter(PLACEHOLDER_TASKS[counter % PLACEHOLDER_TASKS.length], options.labels);
           color = round.colors[counter % round.colors.length];
           counter++;
         }

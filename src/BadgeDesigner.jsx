@@ -53,7 +53,7 @@ import {
   AlignHorizontalDistributeCenter,
   AlignVerticalDistributeCenter,
 } from "lucide-react";
-import { buildCompetitorSchedules, buildGenericSchedule, buildStageList, listScheduleTexts, resolveScheduleTimezone } from "./schedule.js";
+import { taskKeyRows, buildCompetitorSchedules, buildGenericSchedule, buildStageList, listScheduleTexts, resolveScheduleTimezone } from "./schedule.js";
 import { generateBadgesPdf, downloadPdfBytes, eightPerSheetLayout, imposeEightPerSheet } from "./pdfExport.js";
 import defaultTemplate from "./defaultTemplate.json";
 import { applyTextCase, DEFAULT_FRAME, layoutTextFrame, shrinkToWidth } from "./textLayout.js";
@@ -316,12 +316,6 @@ const SCHEDULE_QR_FONT_SIZE_PX = 11; // larger label size for merged "QR" cells 
 // ---------------------------------------------------------------------
 const TASKKEY_HEADER_HEIGHT_PX = SCHEDULE_SUBHEADER_HEIGHT_PX;
 const TASKKEY_ROW_HEIGHT_PX = SCHEDULE_ROW_HEIGHT_PX;
-const TASKKEY_TASKS = [
-  { code: "C", label: "Compete" },
-  { code: "J", label: "Judge" },
-  { code: "R", label: "Runner" },
-  { code: "S", label: "Scrambler" },
-];
 const TASKKEY_FALLBACK_STAGES = [
   { name: "Stage 1", color: "#63f153" },
   { name: "Stage 2", color: "#da3f39" },
@@ -415,11 +409,11 @@ function resolveScheduleRows(field, sampleData) {
 // Single source of truth for the Task Key field's two columns. Stage names
 // can be overridden per-field (field.stageNames[i]); colors always come from
 // the loaded competition (or the fallback), since those aren't user text.
-function resolveTaskKeyRows(field, sampleData) {
+function resolveTaskKeyRows(field, sampleData, scheduleLabels) {
   const stages = sampleData.stages && sampleData.stages.length > 0 ? sampleData.stages : TASKKEY_FALLBACK_STAGES;
   const overrides = (field && field.stageNames) || [];
   const stageRows = stages.map((s, i) => ({ ...s, name: (overrides[i] && overrides[i].trim()) || s.name }));
-  return { taskRows: TASKKEY_TASKS, stageRows };
+  return { taskRows: taskKeyRows(scheduleLabels), stageRows };
 }
 
 function resolveMapping(field, sampleData, kind) {
@@ -745,7 +739,7 @@ function inflateTemplate(data) {
     // website (see StageColorsPanel). Empty = WCA colors everywhere.
     stageColors: data.stage_colors || {},
     // User renames for schedule rows (see SchedulePanel / listScheduleTexts).
-    scheduleLabels: { events: {}, activities: {}, ...(data.schedule_labels || {}) },
+    scheduleLabels: { events: {}, activities: {}, tasks: {}, ...(data.schedule_labels || {}) },
     // MBLD cube submission shown as a task (see buildCompetitorSchedules).
     mbldSubmission: { enabled: false, task: "C", hideForOthers: false, ...(data.mbld_submission || {}) },
     // Later rounds shown as one row instead of one per group (see buildBaseSchedule).
@@ -1255,8 +1249,9 @@ export default function BadgeDesigner() {
       }
       return next;
     }, `schedule:${Object.keys(patch).join()}`);
-  // kind: "events" (keyed by event id) or "activities" (keyed by the
-  // activity's WCIF name). Empty text drops the rename.
+  // kind: "events" (keyed by event id), "activities" (keyed by the
+  // activity's WCIF name) or "tasks" (keyed by assignment code). Empty text
+  // drops the rename.
   const setScheduleLabel = (kind, key, text) => {
     const group = { ...(state.scheduleLabels[kind] || {}) };
     if (text) group[key] = text;
@@ -1921,6 +1916,7 @@ export default function BadgeDesigner() {
                 showHandles={active && selectedIds.length === 1 && selectedIds[0] === f.id}
                 outsideMargin={outsideIds.includes(f.id)}
                 sampleData={state.sampleData}
+                scheduleLabels={state.scheduleLabels}
                 onPointerDownMove={(e) => startDrag(e, f, "move", pageSide)}
                 onPointerDownResize={(e) => startDrag(e, f, "resize", pageSide)}
               />
@@ -2516,7 +2512,7 @@ function PrintLayoutMenu({ layout, eightFits, onChange, onClose }) {
   );
 }
 
-function FieldBox({ field, scale, selected, showHandles, outsideMargin, sampleData, onPointerDownMove, onPointerDownResize }) {
+function FieldBox({ field, scale, selected, showHandles, outsideMargin, sampleData, scheduleLabels, onPointerDownMove, onPointerDownResize }) {
   const w = fieldBoxWidthMm(field) * scale;
   const textWraps = field.type === "text" && field.wrap;
   const align = field.align || "left";
@@ -2537,11 +2533,11 @@ function FieldBox({ field, scale, selected, showHandles, outsideMargin, sampleDa
 
   // Task Key height is likewise derived — tallest of the two columns
   // (task codes are always exactly 4; stages vary by competition).
-  let taskKeyRows = null;
+  let taskKey = null;
   let taskKeyHeightPx = null;
   if (field.type === "taskkey") {
-    taskKeyRows = resolveTaskKeyRows(field, sampleData);
-    const rowCount = Math.max(taskKeyRows.taskRows.length, taskKeyRows.stageRows.length);
+    taskKey = resolveTaskKeyRows(field, sampleData, scheduleLabels);
+    const rowCount = Math.max(taskKey.taskRows.length, taskKey.stageRows.length);
     taskKeyHeightPx = TASKKEY_HEADER_HEIGHT_PX + rowCount * TASKKEY_ROW_HEIGHT_PX;
   }
 
@@ -2831,7 +2827,7 @@ function FieldBox({ field, scale, selected, showHandles, outsideMargin, sampleDa
       </div>
     );
   } else if (field.type === "taskkey") {
-    const { taskRows, stageRows } = taskKeyRows;
+    const { taskRows, stageRows } = taskKey;
     const rowCount = Math.max(taskRows.length, stageRows.length);
     content = (
       <div
@@ -3198,6 +3194,9 @@ function SchedulePanel({ texts, labels, onLabelChange, mbldSubmission, onMbldCha
   };
   // Only rounds actually split into groups are worth offering.
   const mergeable = (texts?.laterRounds || []).filter((r) => r.groups > 1);
+  const tasks = texts?.tasks || [];
+  const letterOf = (t) => labels.tasks?.[t.code]?.trim() || t.defaultText;
+  const sharedWith = (t) => tasks.filter((o) => o !== t && letterOf(o) === letterOf(t)).map((o) => o.name);
 
   const renameRow = (kind, key, defaultText) => (
     <div key={key} className="flex items-center gap-1.5">
@@ -3277,6 +3276,33 @@ function SchedulePanel({ texts, labels, onLabelChange, mbldSubmission, onMbldCha
 
       {texts ? (
         <>
+          {tasks.length > 0 && (
+            <div className="space-y-1.5 border-t border-neutral-200 pt-3">
+              <div className="text-[11px] font-semibold text-neutral-600">Task letters</div>
+              <div className="text-[10px] text-neutral-400">What the Task column prints for each kind of assignment, up to 3 characters. Leave blank to keep the default.</div>
+              {tasks.map((t) => {
+                const shared = sharedWith(t);
+                return (
+                  <div key={t.code}>
+                    <label className="flex items-center gap-1.5">
+                      <span className="flex-1 text-[11px] text-neutral-500 truncate" title={t.code}>{t.name}</span>
+                      <span className="text-[10px] text-neutral-400">{t.count}</span>
+                      <input
+                        type="text"
+                        aria-label={`Letter for ${t.name}`}
+                        value={labels.tasks?.[t.code] || ""}
+                        placeholder={t.defaultText}
+                        maxLength={3}
+                        onChange={(e) => onLabelChange("tasks", t.code, e.target.value)}
+                        className="w-14 text-xs px-2 py-1 border border-neutral-300 rounded-md text-center font-bold"
+                      />
+                    </label>
+                    {shared.length > 0 && <div className="text-[10px] text-amber-700">Same letter as {shared.join(", ")}</div>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
           <div className="space-y-1.5 border-t border-neutral-200 pt-3">
             <div className="text-[11px] font-semibold text-neutral-600">Event names</div>
             <div className="text-[10px] text-neutral-400">Replaces the event part of every row, e.g. "3x3 OH R1 - G2" → "OH R1 - G2". Leave blank to keep the default.</div>
