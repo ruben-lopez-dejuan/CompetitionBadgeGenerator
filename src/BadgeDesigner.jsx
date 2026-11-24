@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useLayoutEffect } from "react";
+import React, { useState, useRef, useEffect, useLayoutEffect, useMemo } from "react";
 import {
   Type,
   Image as ImageIcon,
@@ -53,7 +53,7 @@ import {
   AlignHorizontalDistributeCenter,
   AlignVerticalDistributeCenter,
 } from "lucide-react";
-import { taskKeyRows, buildCompetitorSchedules, buildGenericSchedule, buildStageList, listScheduleTexts, resolveScheduleTimezone } from "./schedule.js";
+import { buildGenericSchedule, buildStageList, listScheduleTexts, longestTaskKeyRows, resolveScheduleTimezone, taskKeyRows } from "./schedule.js";
 import { generateBadgesPdf, downloadPdfBytes, eightPerSheetLayout, imposeEightPerSheet } from "./pdfExport.js";
 import defaultTemplate from "./defaultTemplate.json";
 import { applyTextCase, DEFAULT_FRAME, layoutTextFrame, shrinkToWidth } from "./textLayout.js";
@@ -409,11 +409,11 @@ function resolveScheduleRows(field, sampleData) {
 // Single source of truth for the Task Key field's two columns. Stage names
 // can be overridden per-field (field.stageNames[i]); colors always come from
 // the loaded competition (or the fallback), since those aren't user text.
-function resolveTaskKeyRows(field, sampleData, scheduleLabels) {
+function resolveTaskKeyRows(field, sampleData, taskRows) {
   const stages = sampleData.stages && sampleData.stages.length > 0 ? sampleData.stages : TASKKEY_FALLBACK_STAGES;
   const overrides = (field && field.stageNames) || [];
   const stageRows = stages.map((s, i) => ({ ...s, name: (overrides[i] && overrides[i].trim()) || s.name }));
-  return { taskRows: taskKeyRows(scheduleLabels), stageRows };
+  return { taskRows, stageRows };
 }
 
 function resolveMapping(field, sampleData, kind) {
@@ -739,7 +739,7 @@ function inflateTemplate(data) {
     // website (see StageColorsPanel). Empty = WCA colors everywhere.
     stageColors: data.stage_colors || {},
     // User renames for schedule rows (see SchedulePanel / listScheduleTexts).
-    scheduleLabels: { events: {}, activities: {}, tasks: {}, ...(data.schedule_labels || {}) },
+    scheduleLabels: { events: {}, activities: {}, tasks: {}, taskNames: {}, ...(data.schedule_labels || {}) },
     // MBLD cube submission shown as a task (see buildCompetitorSchedules).
     mbldSubmission: { enabled: false, task: "C", hideForOthers: false, ...(data.mbld_submission || {}) },
     // Later rounds shown as one row instead of one per group (see buildBaseSchedule).
@@ -1250,8 +1250,8 @@ export default function BadgeDesigner() {
       return next;
     }, `schedule:${Object.keys(patch).join()}`);
   // kind: "events" (keyed by event id), "activities" (keyed by the
-  // activity's WCIF name) or "tasks" (keyed by assignment code). Empty text
-  // drops the rename.
+  // activity's WCIF name), or "tasks" (letters) and "taskNames" (both keyed by
+  // assignment code). Empty text drops the rename.
   const setScheduleLabel = (kind, key, text) => {
     const group = { ...(state.scheduleLabels[kind] || {}) };
     if (text) group[key] = text;
@@ -1260,6 +1260,13 @@ export default function BadgeDesigner() {
   };
   const updateMbldSubmission = (patch) => updateScheduleSettings({ mbldSubmission: { ...state.mbldSubmission, ...patch } });
   const scheduleTexts = state.wcif ? listScheduleTexts(state.wcif) : null;
+  const taskKeyTasks = useMemo(
+    () =>
+      state.wcif
+        ? longestTaskKeyRows(state.wcif, { labels: state.scheduleLabels, mbldSubmission: state.mbldSubmission })
+        : taskKeyRows(state.scheduleLabels),
+    [state.wcif, state.scheduleLabels, state.mbldSubmission]
+  );
   const detectedScheduleTimezone = state.wcif ? resolveScheduleTimezone(state.wcif) : null;
 
   // ---------- dragging, resizing, selection box, panning ----------
@@ -1916,7 +1923,7 @@ export default function BadgeDesigner() {
                 showHandles={active && selectedIds.length === 1 && selectedIds[0] === f.id}
                 outsideMargin={outsideIds.includes(f.id)}
                 sampleData={state.sampleData}
-                scheduleLabels={state.scheduleLabels}
+                taskKeyTasks={taskKeyTasks}
                 onPointerDownMove={(e) => startDrag(e, f, "move", pageSide)}
                 onPointerDownResize={(e) => startDrag(e, f, "resize", pageSide)}
               />
@@ -2402,6 +2409,7 @@ export default function BadgeDesigner() {
             <PropertiesPanel
               field={selectedField}
               sampleData={state.sampleData}
+              taskKeyTasks={taskKeyTasks}
               fonts={state.fonts}
               loadLibraryFont={loadLibraryFont}
               pageWidth={sideData.page.width_mm}
@@ -2512,7 +2520,7 @@ function PrintLayoutMenu({ layout, eightFits, onChange, onClose }) {
   );
 }
 
-function FieldBox({ field, scale, selected, showHandles, outsideMargin, sampleData, scheduleLabels, onPointerDownMove, onPointerDownResize }) {
+function FieldBox({ field, scale, selected, showHandles, outsideMargin, sampleData, taskKeyTasks, onPointerDownMove, onPointerDownResize }) {
   const w = fieldBoxWidthMm(field) * scale;
   const textWraps = field.type === "text" && field.wrap;
   const align = field.align || "left";
@@ -2532,11 +2540,12 @@ function FieldBox({ field, scale, selected, showHandles, outsideMargin, sampleDa
   }
 
   // Task Key height is likewise derived — tallest of the two columns
-  // (task codes are always exactly 4; stages vary by competition).
+  // (each person gets 4 tasks plus any other they do; the editor shows the
+  // longest one).
   let taskKey = null;
   let taskKeyHeightPx = null;
   if (field.type === "taskkey") {
-    taskKey = resolveTaskKeyRows(field, sampleData, scheduleLabels);
+    taskKey = resolveTaskKeyRows(field, sampleData, taskKeyTasks);
     const rowCount = Math.max(taskKey.taskRows.length, taskKey.stageRows.length);
     taskKeyHeightPx = TASKKEY_HEADER_HEIGHT_PX + rowCount * TASKKEY_ROW_HEIGHT_PX;
   }
@@ -3278,15 +3287,22 @@ function SchedulePanel({ texts, labels, onLabelChange, mbldSubmission, onMbldCha
         <>
           {tasks.length > 0 && (
             <div className="space-y-1.5 border-t border-neutral-200 pt-3">
-              <div className="text-[11px] font-semibold text-neutral-600">Task letters</div>
-              <div className="text-[10px] text-neutral-400">What the Task column prints for each kind of assignment, up to 3 characters. Leave blank to keep the default.</div>
+              <div className="text-[11px] font-semibold text-neutral-600">Tasks</div>
+              <div className="text-[10px] text-neutral-400">The letter each kind of assignment prints in the Task column (up to 3 characters), and its name in the Task key. The key always has Compete, Judge, Runner and Scrambler, plus any other each person does. Leave blank to keep the default.</div>
               {tasks.map((t) => {
                 const shared = sharedWith(t);
                 return (
                   <div key={t.code}>
-                    <label className="flex items-center gap-1.5">
-                      <span className="flex-1 text-[11px] text-neutral-500 truncate" title={t.code}>{t.name}</span>
-                      <span className="text-[10px] text-neutral-400">{t.count}</span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-20 shrink-0 text-[11px] text-neutral-500 truncate" title={`${t.code}: ${t.count} assignments`}>{t.name}</span>
+                      <input
+                        type="text"
+                        aria-label={`Name for ${t.name}`}
+                        value={labels.taskNames?.[t.code] || ""}
+                        placeholder={t.defaultName}
+                        onChange={(e) => onLabelChange("taskNames", t.code, e.target.value)}
+                        className="flex-1 min-w-0 text-xs px-2 py-1 border border-neutral-300 rounded-md"
+                      />
                       <input
                         type="text"
                         aria-label={`Letter for ${t.name}`}
@@ -3296,7 +3312,7 @@ function SchedulePanel({ texts, labels, onLabelChange, mbldSubmission, onMbldCha
                         onChange={(e) => onLabelChange("tasks", t.code, e.target.value)}
                         className="w-14 text-xs px-2 py-1 border border-neutral-300 rounded-md text-center font-bold"
                       />
-                    </label>
+                    </div>
                     {shared.length > 0 && <div className="text-[10px] text-amber-700">Same letter as {shared.join(", ")}</div>}
                   </div>
                 );
@@ -3404,7 +3420,7 @@ function FontsPanel({ fonts, onUpload, onRename, onRemove }) {
   );
 }
 
-function PropertiesPanel({ field, sampleData, fonts, loadLibraryFont, pageWidth, pageHeight, onChange, scheduleTimezone, detectedScheduleTimezone, onScheduleTimezoneChange, onSyncCountryFlags, hasWcif }) {
+function PropertiesPanel({ field, sampleData, taskKeyTasks, fonts, loadLibraryFont, pageWidth, pageHeight, onChange, scheduleTimezone, detectedScheduleTimezone, onScheduleTimezoneChange, onSyncCountryFlags, hasWcif }) {
   const round1 = (v) => Math.round(v * 10) / 10;
   const fieldHeightMm = () => {
     if (field.type === "schedule") {
@@ -3412,7 +3428,7 @@ function PropertiesPanel({ field, sampleData, fonts, loadLibraryFont, pageWidth,
       return (SCHEDULE_HEADER_HEIGHT_PX + SCHEDULE_SUBHEADER_HEIGHT_PX + rows * SCHEDULE_ROW_HEIGHT_PX + SCHEDULE_BOTTOM_PADDING_PX) / SCALE;
     }
     if (field.type === "taskkey") {
-      const { taskRows, stageRows } = resolveTaskKeyRows(field, sampleData);
+      const { taskRows, stageRows } = resolveTaskKeyRows(field, sampleData, taskKeyTasks);
       const rowCount = Math.max(taskRows.length, stageRows.length);
       return (TASKKEY_HEADER_HEIGHT_PX + rowCount * TASKKEY_ROW_HEIGHT_PX) / SCALE;
     }
