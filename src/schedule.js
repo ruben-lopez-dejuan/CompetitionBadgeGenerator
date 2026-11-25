@@ -711,6 +711,42 @@ export function buildCompetitorSchedules(wcif, timezoneOverride, options = {}) {
 }
 
 /**
+ * The competition at a glance, for badges that aren't for anyone in it: one
+ * row per round and day, starting at its first group, plus breaks and other
+ * activities. MBLD attempts stay apart, and the MBLD cube submission, which
+ * is only for competitors, is left out. Rows have no task (noTask).
+ */
+export function buildMainSchedule(wcif, timezoneOverride, options = {}) {
+  const { baseSchedule } = buildBaseSchedule(wcif, resolveScheduleTimezone(wcif, timezoneOverride), options);
+  const schedule = {};
+  for (const [day, rows] of Object.entries(baseSchedule)) {
+    const seenRounds = new Set();
+    schedule[day] = [];
+    for (const row of rows) {
+      const code = row.activityCode || "";
+      const isSpecial = code.startsWith("other");
+      if (code === "other-multi") continue;
+      if (!isSpecial) {
+        const round = code.replace(/-g\d+/, "");
+        if (round && seenRounds.has(round)) continue;
+        seenRounds.add(round);
+      }
+      schedule[day].push({
+        id: String(row.activity_ids[0]),
+        time: row.time,
+        event: isSpecial ? row.event : row.event.replace(/ - G\d+$/, ""),
+        task: null,
+        color: null,
+        isSpecial,
+        noTask: true,
+        activityCode: row.activityCode,
+      });
+    }
+  }
+  return schedule;
+}
+
+/**
  * Generic, placeholder-only schedule for template DESIGN time.
  *
  * Shows the real event structure (dates, times, event names — collapsed

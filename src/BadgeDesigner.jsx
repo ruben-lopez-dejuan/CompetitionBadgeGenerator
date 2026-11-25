@@ -54,7 +54,7 @@ import {
   AlignHorizontalDistributeCenter,
   AlignVerticalDistributeCenter,
 } from "lucide-react";
-import { buildGenericSchedule, buildStageList, listScheduleTexts, longestTaskKeyRows, resolveScheduleTimezone, stagesForPerson, taskKeyRows } from "./schedule.js";
+import { buildGenericSchedule, buildMainSchedule, buildStageList, listScheduleTexts, longestTaskKeyRows, resolveScheduleTimezone, stagesForPerson, taskKeyRows } from "./schedule.js";
 import { generateBadgesPdf, downloadPdfBytes, eightPerSheetLayout, imposeEightPerSheet } from "./pdfExport.js";
 import defaultTemplate from "./defaultTemplate.json";
 import { applyTextCase, DEFAULT_FRAME, layoutTextFrame, shrinkToWidth } from "./textLayout.js";
@@ -67,7 +67,7 @@ import AboutDialog from "./editor/AboutDialog.jsx";
 import FontPicker from "./editor/FontPicker.jsx";
 import Logo from "./editor/Logo.jsx";
 import ExtraBadgesPanel from "./editor/ExtraBadgesPanel.jsx";
-import { buildExtraSchedules, exportExtraGroup, extraBadgeData, extraBadgeSide, inflateExtraGroup, isBlankTemplate, newExtraGroup } from "./extraBadges.js";
+import { exportExtraGroup, extraBadgeData, extraBadgeSide, inflateExtraGroup, isBlankTemplate, newExtraGroup } from "./extraBadges.js";
 import { libraryFamily } from "./fontLibrary.js";
 
 const SCALE = 5.2; // px per mm
@@ -851,7 +851,9 @@ export default function BadgeDesigner() {
   const zoomAnchorRef = useRef(null); // keeps the point under the pointer still while zooming
   const pasteCountRef = useRef(0); // how many times the clipboard has been pasted, to offset copies
 
-  const loadWcifData = async (compIdOrFile) => {
+  // base: the document it's loaded into. Opening a template passes its own,
+  // which isn't in `state` yet.
+  const loadWcifData = async (compIdOrFile, base = state) => {
     try {
       let wcif;
       if (typeof compIdOrFile === "string") {
@@ -881,14 +883,14 @@ export default function BadgeDesigner() {
       // never a specific person's actual assignments. Real per-competitor
       // data (and buildCompetitorSchedules) only gets used later, in batch
       // generation, once this template is applied to the whole roster.
-      const genericSchedule = buildGenericSchedule(wcif, state.scheduleTimezone || undefined, scheduleOptions(state));
-      const stages = buildStageList(wcif, state.stageColors);
+      const genericSchedule = buildGenericSchedule(wcif, base.scheduleTimezone || undefined, scheduleOptions(base));
+      const stages = buildStageList(wcif, base.stageColors);
 
       // Populates any "driven by country" image field's mappings from the
       // flags actually needed for this WCIF's competitors (see
       // syncCountryFlagFields) — both sides, independently of which one is
       // currently showing.
-      const [frontFields, backFields] = await Promise.all([syncCountryFlagFields(state.front.fields, wcif), syncCountryFlagFields(state.back.fields, wcif)]);
+      const [frontFields, backFields] = await Promise.all([syncCountryFlagFields(base.front.fields, wcif), syncCountryFlagFields(base.back.fields, wcif)]);
 
       setState((prev) => ({
         ...prev,
@@ -902,8 +904,9 @@ export default function BadgeDesigner() {
           schedules: genericSchedule, // Map of "YYYY-MM-DD" -> placeholder row array
           stages, // [{ name, color }, ...] — used by the Task Key field's stage column
         },
-        front: { ...prev.front, fields: frontFields },
-        back: { ...prev.back, fields: backFields },
+        // Elements edited while it was loading are kept as they are now.
+        front: prev.front.fields === base.front.fields ? { ...prev.front, fields: frontFields } : prev.front,
+        back: prev.back.fields === base.back.fields ? { ...prev.back, fields: backFields } : prev.back,
       }));
 
       return true;
@@ -1285,16 +1288,9 @@ export default function BadgeDesigner() {
   const extraSchedules = useMemo(
     () =>
       previewsExtra && state.wcif
-        ? buildExtraSchedules(state.wcif, state.scheduleTimezone || undefined, {
-            stageColors: state.stageColors,
-            labels: state.scheduleLabels,
-            mbldSubmission: state.mbldSubmission,
-            mergedRounds: state.mergedRounds,
-            showExtraTasks: state.showExtraTasks,
-            extraTaskStages: state.extraTaskStages,
-          })
+        ? buildMainSchedule(state.wcif, state.scheduleTimezone || undefined, { stageColors: state.stageColors, labels: state.scheduleLabels, mergedRounds: state.mergedRounds })
         : {},
-    [previewsExtra, state.wcif, state.scheduleTimezone, state.stageColors, state.scheduleLabels, state.mbldSubmission, state.mergedRounds, state.showExtraTasks, state.extraTaskStages]
+    [previewsExtra, state.wcif, state.scheduleTimezone, state.stageColors, state.scheduleLabels, state.mergedRounds]
   );
   const updateExtraGroup = (id, patch) =>
     setState((s) => ({ ...s, extraGroups: s.extraGroups.map((g) => (g.id === id ? { ...g, ...patch } : g)) }), `extra:${id}:${Object.keys(patch).join()}`);
@@ -1939,6 +1935,9 @@ export default function BadgeDesigner() {
             "Template imported. This file predates embedded assets (or a font failed to load) — some backgrounds/images/fonts will need re-uploading. Anything exported after this update carries its own images and fonts, so re-importing it needs no re-uploads at all."
           );
         }
+
+        // Templates saved with a competition loaded by ID bring it back.
+        if (next.competitionId) await loadWcifData(next.competitionId, next);
       } catch (err) {
         console.error(err);
         alert("Couldn't import that file — is it a valid template.json exported from this app?");
@@ -2803,6 +2802,8 @@ function FieldBox({ field, scale, selected, showHandles, outsideMargin, sampleDa
   } else if (field.type === "schedule") {
     const headerTitle = scheduleHeaderTitle;
     const visibleRows = scheduleVisibleRows;
+    // A schedule without tasks (see buildMainSchedule) has no Task column.
+    const noTaskColumn = visibleRows.some((r) => r.noTask);
     content = (
       <div
         className="w-full h-full bg-white flex flex-col overflow-hidden select-none leading-none"
@@ -2824,8 +2825,8 @@ function FieldBox({ field, scale, selected, showHandles, outsideMargin, sampleDa
             style={{ height: SCHEDULE_SUBHEADER_HEIGHT_PX, boxSizing: "border-box", background: SCHEDULE_COLORS.subheaderBg, borderBottom: `1px solid ${SCHEDULE_COLORS.border}` }}
           >
             <span className="w-10 h-full flex items-center justify-center shrink-0" style={{ borderRight: `1px solid ${SCHEDULE_COLORS.border}` }}>{field.columnLabels?.time || "Time"}</span>
-            <span className="flex-1 h-full flex items-center justify-center" style={{ borderRight: `1px solid ${SCHEDULE_COLORS.border}` }}>{field.columnLabels?.event || "Event"}</span>
-            <span className="w-9 h-full flex items-center justify-center shrink-0">{field.columnLabels?.task || "Task"}</span>
+            <span className="flex-1 h-full flex items-center justify-center" style={{ borderRight: noTaskColumn ? undefined : `1px solid ${SCHEDULE_COLORS.border}` }}>{field.columnLabels?.event || "Event"}</span>
+            {!noTaskColumn && <span className="w-9 h-full flex items-center justify-center shrink-0">{field.columnLabels?.task || "Task"}</span>}
           </div>
 
           {/* Rows — grouped into "blocks": a normal row stays a single row,
@@ -2920,14 +2921,16 @@ function FieldBox({ field, scale, selected, showHandles, outsideMargin, sampleDa
                     ) : (
                       <>
                         {/* Event Cell */}
-                        <div className="flex-1 flex items-center justify-center font-bold truncate px-1" style={{ borderRight: `1px solid ${SCHEDULE_COLORS.border}` }}>
+                        <div className="flex-1 flex items-center justify-center font-bold truncate px-1" style={{ borderRight: noTaskColumn ? undefined : `1px solid ${SCHEDULE_COLORS.border}` }}>
                           {r.event}
                         </div>
 
                         {/* Task Cell */}
-                        <div className="w-9 flex items-center justify-center font-bold shrink-0 px-0.5" style={{ backgroundColor: r.color ? hexToRgba(r.color, SCHEDULE_COLORS.taskCellTint) : undefined }}>
-                          {r.task}
-                        </div>
+                        {!noTaskColumn && (
+                          <div className="w-9 flex items-center justify-center font-bold shrink-0 px-0.5" style={{ backgroundColor: r.color ? hexToRgba(r.color, SCHEDULE_COLORS.taskCellTint) : undefined }}>
+                            {r.task}
+                          </div>
+                        )}
                       </>
                     )}
                   </div>
