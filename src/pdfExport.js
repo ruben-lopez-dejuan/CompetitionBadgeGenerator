@@ -1,4 +1,4 @@
-import { PDFDocument, degrees, rgb, StandardFonts, pushGraphicsState, popGraphicsState, concatTransformationMatrix, rectangle, clip, endPath } from "pdf-lib";
+import { PDFDocument, cmyk, degrees, rgb, StandardFonts, pushGraphicsState, popGraphicsState, concatTransformationMatrix, rectangle, clip, endPath } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
 import QRCode from "qrcode";
 import { buildCompetitorSchedules, buildMainSchedule, buildStageList, stagesForPerson, taskKeyRows } from "./schedule.js";
@@ -1066,13 +1066,15 @@ async function loadGoogleScriptFonts(pdfDoc, fonts, persons) {
 const CROP_MARK_MM = 5;
 const CROP_MARK_GAP_MM = 2;
 const CROP_MARK_WIDTH = 0.25;
+// On every plate in CMYK; the conversion (cmyk.js) leaves CMYK colors alone.
+const cropMarkColor = (inCmyk) => (inCmyk ? cmyk(1, 1, 1, 1) : rgb(0, 0, 0));
 
 const cropMarkGapMm = (bleedMm) => Math.max(bleedMm, CROP_MARK_GAP_MM);
 
-function drawCropMarks(page, w, h, bleedMm) {
+function drawCropMarks(page, w, h, bleedMm, inCmyk) {
   const from = mmv(cropMarkGapMm(bleedMm));
   const to = from + mmv(CROP_MARK_MM);
-  const line = (x1, y1, x2, y2) => page.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, thickness: CROP_MARK_WIDTH, color: rgb(0, 0, 0) });
+  const line = (x1, y1, x2, y2) => page.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, thickness: CROP_MARK_WIDTH, color: cropMarkColor(inCmyk) });
   for (const x of [0, w]) {
     line(x, -to, x, -from);
     line(x, h + from, x, h + to);
@@ -1202,9 +1204,9 @@ function buildPersonContext(person, sampleData, competitorSchedules, stages, rol
  * @param {object} [parts]  - people: false leaves out the competition's
  *   people; extraGroups: groups of extra badges (see extraBadges.js), added
  *   after them. Without people, wcif can be null. cropMarks: draw them
- *   around each badge.
+ *   around each badge. inCmyk: the file will be converted to CMYK.
  */
-export async function generateBadgesPdf(state, wcif, onProgress, { people = true, extraGroups = [], cropMarks = false } = {}) {
+export async function generateBadgesPdf(state, wcif, onProgress, { people = true, extraGroups = [], cropMarks = false, inCmyk = false } = {}) {
   const pdfDoc = await PDFDocument.create();
   pdfDoc.registerFontkit(fontkit);
 
@@ -1345,7 +1347,7 @@ export async function generateBadgesPdf(state, wcif, onProgress, { people = true
       }
 
       if (marginPt > 0) page.pushOperators(popGraphicsState());
-      if (cropMarks) drawCropMarks(page, mmv(pageWMm), mmv(pageHMm), bleed.mm);
+      if (cropMarks) drawCropMarks(page, mmv(pageWMm), mmv(pageHMm), bleed.mm, inCmyk);
     }
 
     if (onProgress) onProgress(idx + 1, badges.length);
@@ -1371,7 +1373,7 @@ export function eightPerSheetLayout(badgeW, badgeH) {
 // printing flipped on the short edge. The grid is centered, so a back lands
 // exactly behind its front on both sides of the sheet. Pages can have bleed; crop marks
 // are drawn here, around the grid, as far as the sheet's margin allows.
-export async function imposeEightPerSheet(bytes, { bleedMm = 0, cropMarks = false } = {}) {
+export async function imposeEightPerSheet(bytes, { bleedMm = 0, cropMarks = false, inCmyk = false } = {}) {
   const source = await PDFDocument.load(bytes);
   const out = await PDFDocument.create();
   const sourcePages = source.getPages();
@@ -1405,7 +1407,7 @@ export async function imposeEightPerSheet(bytes, { bleedMm = 0, cropMarks = fals
   const drawMarks = (sheet, page) => {
     const insetX = (cellW - page.width) / 2 + mmv(bleedMm);
     const insetY = (cellH - page.height) / 2 + mmv(bleedMm);
-    const line = (x1, y1, x2, y2) => sheet.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, thickness: CROP_MARK_WIDTH, color: rgb(0, 0, 0) });
+    const line = (x1, y1, x2, y2) => sheet.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, thickness: CROP_MARK_WIDTH, color: cropMarkColor(inCmyk) });
     // From the grid's edge, leaving a small gap, towards the sheet's edge.
     const gap = mmv(1);
     const lengthY = Math.min(mmv(CROP_MARK_MM), marginY - gap);
