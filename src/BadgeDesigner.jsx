@@ -529,6 +529,9 @@ function textFieldDefaults() {
     source: "name",
     staticText: "",
     template: "",
+    // Template fallbacks ({wcaId|NEWCOMER}) only for people who compete. The
+    // preview shows a competitor, so it only matters in the PDF.
+    competitorFallbacks: false,
     useValueMap: false,
     valueMap: [],
     genderVariants: false,
@@ -572,6 +575,7 @@ function inflateTextField(f) {
     source: f.source || "name",
     staticText: f.text || "",
     template: f.template || "",
+    competitorFallbacks: !!f.competitor_fallbacks,
     useValueMap: !!f.value_map,
     valueMap: f.value_map || [],
     genderVariants: !!f.gender_variants,
@@ -1715,6 +1719,7 @@ export default function BadgeDesigner() {
             out.text = f.staticText;
           } else if (out.bindMode === "template") {
             out.template = f.template;
+            if (f.competitorFallbacks) out.competitor_fallbacks = true;
           } else {
             out.source = f.source;
             if (f.useValueMap) Object.assign(out, { value_map: f.valueMap, ...(f.genderVariants ? { gender_variants: true } : {}) });
@@ -3598,6 +3603,12 @@ function PropertiesPanel({ field, sampleData, taskKeyTasks, fonts, loadLibraryFo
               <div className="text-[11px] text-neutral-500 mb-1">Template (use {"{field}"} placeholders, or {"{field|fallback}"} to show fallback text when a value is missing/empty. Enter for a line break)</div>
               <textarea value={field.template || ""} onChange={(e) => onChange({ template: e.target.value })} rows={2} className="w-full text-sm px-2 py-1.5 border border-neutral-300 rounded-md resize-y font-mono" placeholder="e.g. {wcaId|NEWCOMER} - ID {registrantId}" />
               <div className="text-[10px] text-neutral-400 mt-1">Available: {Object.keys(sampleData).map((k) => `{${k}}`).join("  ")}</div>
+              {/\{\w+\|/.test(field.template || "") && (
+                <label className="flex items-center gap-1.5 text-xs text-neutral-600 mt-1.5" title="Volunteers and organizers who don't compete get nothing instead of the fallback text. The preview shows a competitor.">
+                  <input type="checkbox" checked={!!field.competitorFallbacks} onChange={(e) => onChange({ competitorFallbacks: e.target.checked })} />
+                  Leave fallbacks blank for people who don't compete
+                </label>
+              )}
             </div>
           )}
 
