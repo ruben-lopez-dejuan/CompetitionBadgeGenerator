@@ -1,11 +1,11 @@
 import { PDFDocument, degrees, rgb, StandardFonts, pushGraphicsState, popGraphicsState, concatTransformationMatrix } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
 import QRCode from "qrcode";
-import { buildCompetitorSchedules, buildStageList, stagesForPerson, taskKeyRows } from "./schedule.js";
+import { buildCompetitorSchedules, buildMainSchedule, buildStageList, stagesForPerson, taskKeyRows } from "./schedule.js";
 import { applyTextCase, breakPoints, layoutTextFrame } from "./textLayout.js";
 import { isFullCrop, placeImage } from "./imageCrop.js";
 import { personRole as matchPersonRole } from "./roles.js";
-import { buildExtraSchedules, extraBadgeData, extraBadgeName, extraBadgeSide, isBlankTemplate } from "./extraBadges.js";
+import { extraBadgeData, extraBadgeName, extraBadgeSide, isBlankTemplate } from "./extraBadges.js";
 import { pickMappedLabel } from "./valueMap.js";
 
 const MM_TO_PT = 2.834645669;
@@ -634,7 +634,9 @@ function drawScheduleField(page, field, ctx, fonts, originX, originY) {
   const totalHMm = SCHEDULE_HEADER_H_MM + SCHEDULE_SUBHEADER_H_MM + rowCounts.reduce((a, b) => a + b, 0) * SCHEDULE_ROW_H_MM + SCHEDULE_BOTTOM_PADDING_MM;
   const topY = originY;
   const timeW = mmv(SCHEDULE_TIME_W_MM);
-  const taskW = mmv(SCHEDULE_TASK_W_MM);
+  // A schedule without tasks (see buildMainSchedule) has no Task column.
+  const noTask = rows.some((r) => r.noTask);
+  const taskW = noTask ? 0 : mmv(SCHEDULE_TASK_W_MM);
   const black = rgb(0, 0, 0);
 
   const hline = (y, x1, x2) => page.drawLine({ start: { x: x1, y }, end: { x: x2, y }, thickness: 0.5, color: hexToRgb01(SCHEDULE_COLORS.border) });
@@ -654,10 +656,10 @@ function drawScheduleField(page, field, ctx, fonts, originX, originY) {
   const labelY = subY - mmv(SCHEDULE_SUBHEADER_H_MM) / 2;
   centered(normText(field.columnLabels?.time || "Time"), x0 + timeW / 2, labelY, fonts.helveticaBold, SCHEDULE_FONT_SIZE);
   centered(normText(field.columnLabels?.event || "Event"), x0 + timeW + (w - timeW - taskW) / 2, labelY, fonts.helveticaBold, SCHEDULE_FONT_SIZE);
-  centered(normText(field.columnLabels?.task || "Task"), x0 + w - taskW / 2, labelY, fonts.helveticaBold, SCHEDULE_FONT_SIZE);
+  if (!noTask) centered(normText(field.columnLabels?.task || "Task"), x0 + w - taskW / 2, labelY, fonts.helveticaBold, SCHEDULE_FONT_SIZE);
   hline(subY - mmv(SCHEDULE_SUBHEADER_H_MM), x0, x0 + w);
   vline(x0 + timeW, subY, subY - mmv(SCHEDULE_SUBHEADER_H_MM));
-  vline(x0 + w - taskW, subY, subY - mmv(SCHEDULE_SUBHEADER_H_MM));
+  if (!noTask) vline(x0 + w - taskW, subY, subY - mmv(SCHEDULE_SUBHEADER_H_MM));
 
   let curY = subY - mmv(SCHEDULE_SUBHEADER_H_MM);
 
@@ -710,7 +712,7 @@ function drawScheduleField(page, field, ctx, fonts, originX, originY) {
         centered(r.event.toUpperCase(), x0 + timeW + (w - timeW) / 2, rowTop - rowH / 2, fonts.helveticaBold, SCHEDULE_FONT_SIZE);
       } else {
         centered(r.event, x0 + timeW + (w - timeW - taskW) / 2, rowTop - rowH / 2, fonts.helveticaBold, SCHEDULE_FONT_SIZE);
-        page.drawRectangle({ x: x0 + w - taskW, y: rowTop - rowH, width: taskW, height: rowH, color: hexToRgb01(r.color || "#ffffff") });
+        if (!noTask) page.drawRectangle({ x: x0 + w - taskW, y: rowTop - rowH, width: taskW, height: rowH, color: hexToRgb01(r.color || "#ffffff") });
         centered(r.task || "", x0 + w - taskW / 2, rowTop - rowH / 2, fonts.helveticaBold, SCHEDULE_FONT_SIZE);
       }
     }
@@ -736,7 +738,7 @@ function drawScheduleField(page, field, ctx, fonts, originX, originY) {
     } else {
       const isSpecial = isSpecialScheduleRow(block.row);
       vline(x0 + timeW, rowTop, bottomY);
-      if (!isSpecial) vline(x0 + w - taskW, rowTop, bottomY);
+      if (!isSpecial && !noTask) vline(x0 + w - taskW, rowTop, bottomY);
     }
     hline(bottomY, x0, x0 + w);
   }
@@ -1216,7 +1218,7 @@ export async function generateBadgesPdf(state, wcif, onProgress, { people = true
     sides: state,
     ctx: buildPersonContext(person, state.sampleData, competitorSchedules, stages, state.roleMapping),
   }));
-  const extraSchedules = wcif && extraGroups.length ? buildExtraSchedules(wcif, timezone, scheduleOptions) : {};
+  const extraSchedules = wcif && extraGroups.length ? buildMainSchedule(wcif, timezone, scheduleOptions) : {};
   const extraNames = [];
   for (const group of extraGroups) {
     const sides = { front: extraBadgeSide(state.front, "front", group), back: extraBadgeSide(state.back, "back", group) };

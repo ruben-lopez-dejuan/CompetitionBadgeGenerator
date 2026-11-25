@@ -2,7 +2,6 @@
 // for a sponsor). They use the template's design with their own backgrounds,
 // texts and, if wanted, without some of its elements. Shared by the editor
 // preview and the PDF.
-import { buildCompetitorSchedules } from "./schedule.js";
 
 export const MAX_EXTRA_COUNT = 500;
 
@@ -81,11 +80,4 @@ export function extraBadgeSide(sideTpl, sideKey, group) {
     tint: { ...sideTpl.tint, enabled: false },
     backgroundMap: { ...sideTpl.backgroundMap, enabled: false },
   };
-}
-
-// The schedule of someone with no tasks. The rest of the people stay in: a
-// later round's rows depend on whether anyone has a task there.
-export function buildExtraSchedules(wcif, timezone, options) {
-  const id = "extra-badge";
-  return buildCompetitorSchedules({ ...wcif, persons: [...(wcif.persons || []), { registrantId: id, assignments: [] }] }, timezone, options)[id];
 }
