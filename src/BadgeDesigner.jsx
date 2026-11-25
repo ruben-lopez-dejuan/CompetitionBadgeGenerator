@@ -67,7 +67,7 @@ import AboutDialog from "./editor/AboutDialog.jsx";
 import FontPicker from "./editor/FontPicker.jsx";
 import Logo from "./editor/Logo.jsx";
 import ExtraBadgesPanel from "./editor/ExtraBadgesPanel.jsx";
-import { buildExtraSchedules, exportExtraGroup, extraBadgeData, extraBadgeSide, inflateExtraGroup, newExtraGroup } from "./extraBadges.js";
+import { buildExtraSchedules, exportExtraGroup, extraBadgeData, extraBadgeSide, inflateExtraGroup, isBlankTemplate, newExtraGroup } from "./extraBadges.js";
 import { libraryFamily } from "./fontLibrary.js";
 
 const SCALE = 5.2; // px per mm
@@ -462,7 +462,7 @@ function resolveTemplate(template, sampleData) {
 
 function resolveTextValue(field, sampleData) {
   if (field.bindMode === "static") return field.staticText ?? "";
-  if (field.bindMode === "template") return resolveTemplate(field.template, sampleData);
+  if (field.bindMode === "template") return isBlankTemplate(field.template, sampleData) ? "" : resolveTemplate(field.template, sampleData);
   const raw = sampleData[field.source] ?? field.source;
   let value = raw;
   if (field.useValueMap) {
