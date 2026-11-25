@@ -4,7 +4,8 @@ import { MAX_EXTRA_COUNT } from "../extraBadges.js";
 
 const inputClass = "w-full text-sm px-2 py-1.5 border border-neutral-300 rounded-md";
 
-function BackgroundPicker({ label, value, onChange }) {
+function BackgroundPicker({ label, value, images, onChange }) {
+  const [open, setOpen] = useState(false);
   const onFile = (e) => {
     const file = e.target.files?.[0];
     e.target.value = "";
@@ -14,19 +15,45 @@ function BackgroundPicker({ label, value, onChange }) {
     reader.readAsDataURL(file);
   };
   return (
-    <div className="flex items-center gap-2">
-      <label className="flex items-center justify-center w-10 h-10 border border-neutral-300 rounded cursor-pointer hover:bg-neutral-50 overflow-hidden shrink-0" title={`Upload the ${label.toLowerCase()} background`}>
-        {value ? <img src={value} alt="" className="w-full h-full object-cover" /> : <Upload size={14} className="text-neutral-400" />}
-        <input type="file" accept="image/png,image/jpeg,image/svg+xml" aria-label={`${label} background`} className="hidden" onChange={onFile} />
-      </label>
-      <div className="flex-1 min-w-0 text-xs">
-        <div>{label}</div>
-        <div className="text-[10px] text-neutral-400">{value ? "Own background" : "Same as the template"}</div>
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2">
+        <label className="flex items-center justify-center w-10 h-10 border border-neutral-300 rounded cursor-pointer hover:bg-neutral-50 overflow-hidden shrink-0" title={`Upload the ${label.toLowerCase()} background`}>
+          {value ? <img src={value} alt="" className="w-full h-full object-cover" /> : <Upload size={14} className="text-neutral-400" />}
+          <input type="file" accept="image/png,image/jpeg,image/svg+xml" aria-label={`${label} background`} className="hidden" onChange={onFile} />
+        </label>
+        <div className="flex-1 min-w-0 text-xs">
+          <div>{label}</div>
+          <div className="text-[10px] text-neutral-400">{value ? "Own background" : "Same as the template"}</div>
+        </div>
+        {value && (
+          <button onClick={() => onChange(null)} className="text-neutral-400 hover:text-red-500" title="Back to the template's background">
+            <Trash2 size={13} />
+          </button>
+        )}
+        {images.length > 0 && (
+          <button onClick={() => setOpen((o) => !o)} className="text-[11px] text-blue-600 hover:underline shrink-0">
+            {open ? "Close" : "Loaded images"}
+          </button>
+        )}
       </div>
-      {value && (
-        <button onClick={() => onChange(null)} className="text-neutral-400 hover:text-red-500" title="Back to the template's background">
-          <Trash2 size={13} />
-        </button>
+      {open && (
+        <div className="grid grid-cols-4 gap-1.5">
+          {images.map((img) => (
+            <button
+              key={img.label}
+              title={img.label}
+              aria-label={`Use ${img.label}`}
+              onClick={() => {
+                onChange(img.src);
+                setOpen(false);
+              }}
+              className={`rounded border overflow-hidden ${img.src === value ? "border-blue-500 ring-1 ring-blue-300" : "border-neutral-300 hover:border-blue-400"}`}
+            >
+              <img src={img.src} alt="" className="w-full h-14 object-cover" />
+              <div className="text-[9px] text-neutral-500 truncate px-0.5">{img.label}</div>
+            </button>
+          ))}
+        </div>
       )}
     </div>
   );
@@ -55,7 +82,7 @@ function ElementList({ label, fields, fieldName, hidden, onChange }) {
 
 // Left-panel tab for the groups of badges that aren't for anyone in the
 // WCIF (see extraBadges.js).
-export default function ExtraBadgesPanel({ groups, frontFields, backFields, fieldName, previewId, onPreview, inMainPdf, onInMainPdfChange, onAdd, onUpdate, onDuplicate, onRemove, onGenerate, generating }) {
+export default function ExtraBadgesPanel({ groups, images, frontFields, backFields, fieldName, previewId, onPreview, inMainPdf, onInMainPdfChange, onAdd, onUpdate, onDuplicate, onRemove, onGenerate, generating }) {
   const [elementsOpen, setElementsOpen] = useState({});
   const total = groups.reduce((sum, g) => sum + g.count, 0);
 
@@ -108,8 +135,8 @@ export default function ExtraBadgesPanel({ groups, frontFields, backFields, fiel
               <div className="text-[10px] text-neutral-400">A single name goes on every badge of the group.</div>
             </label>
 
-            <BackgroundPicker label="Front" value={g.front} onChange={(front) => update({ front })} />
-            <BackgroundPicker label="Back" value={g.back} onChange={(back) => update({ back })} />
+            <BackgroundPicker label="Front" value={g.front} images={images} onChange={(front) => update({ front })} />
+            <BackgroundPicker label="Back" value={g.back} images={images} onChange={(back) => update({ back })} />
 
             <button onClick={() => setElementsOpen((o) => ({ ...o, [g.id]: !o[g.id] }))} className="text-[11px] text-blue-600 hover:underline">
               {elementsOpen[g.id] ? "Hide elements" : "Choose elements to print"}

@@ -66,6 +66,7 @@ import ShortcutsDialog from "./editor/ShortcutsDialog.jsx";
 import AboutDialog from "./editor/AboutDialog.jsx";
 import FontPicker from "./editor/FontPicker.jsx";
 import Logo from "./editor/Logo.jsx";
+import { loadedBackgrounds, packSharedFiles, unpackSharedFiles } from "./templateImages.js";
 import ExtraBadgesPanel from "./editor/ExtraBadgesPanel.jsx";
 import { exportExtraGroup, extraBadgeData, extraBadgeSide, inflateExtraGroup, isBlankTemplate, newExtraGroup } from "./extraBadges.js";
 import { libraryFamily } from "./fontLibrary.js";
@@ -759,6 +760,12 @@ function inflateTemplate(data) {
     extraTaskStages: data.extra_task_stages || {},
     // "single" (one badge per page) or "eight" (8 per A4 sheet, double-sided).
     printLayout: data.print_layout || "single",
+    // Extra printed around the badge, cut off afterwards. bleedFill: what
+    // covers it, "mirror" (the background's mirrored edges) or "included"
+    // (the background images already have it).
+    bleedMm: data.bleed_mm || 0,
+    bleedFill: data.bleed_fill || "mirror",
+    cropMarks: !!data.crop_marks,
     // Badges that aren't for anyone in the WCIF (see extraBadges.js).
     extraGroups: (data.extra_badges || []).map(inflateExtraGroup),
     extraBadgesInMainPdf: !!data.extra_badges_in_main_pdf,
@@ -1825,6 +1832,9 @@ export default function BadgeDesigner() {
       show_extra_tasks: state.showExtraTasks,
       extra_task_stages: state.extraTaskStages,
       print_layout: state.printLayout,
+      bleed_mm: state.bleedMm,
+      bleed_fill: state.bleedFill,
+      crop_marks: state.cropMarks,
       extra_badges: state.extraGroups.map(exportExtraGroup),
       extra_badges_in_main_pdf: state.extraBadgesInMainPdf,
       fonts: fontsManifest,
@@ -1847,7 +1857,7 @@ export default function BadgeDesigner() {
         fields: cleanFields(state.back.fields),
       },
     };
-    const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify(packSharedFiles(out), null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -1857,8 +1867,8 @@ export default function BadgeDesigner() {
   };
 
   const eightPerSheetFits = !!eightPerSheetLayout(
-    Math.max(state.front.page.width_mm, state.back.page.width_mm),
-    Math.max(state.front.page.height_mm, state.back.page.height_mm)
+    Math.max(state.front.page.width_mm, state.back.page.width_mm) + 2 * state.bleedMm,
+    Math.max(state.front.page.height_mm, state.back.page.height_mm) + 2 * state.bleedMm
   );
 
   const generateAllBadges = () => {
@@ -1891,8 +1901,8 @@ export default function BadgeDesigner() {
     }
     setGenerating({ done: 0, total: 0 });
     try {
-      const bytes = await generateBadgesPdf(state, state.wcif, (done, total) => setGenerating({ done, total }), parts);
-      if (eightPerSheet) downloadPdfBytes(await imposeEightPerSheet(bytes), `${filename}_print_ready_8_per_sheet.pdf`);
+      const bytes = await generateBadgesPdf(state, state.wcif, (done, total) => setGenerating({ done, total }), { ...parts, cropMarks: state.cropMarks && !eightPerSheet });
+      if (eightPerSheet) downloadPdfBytes(await imposeEightPerSheet(bytes, { bleedMm: state.bleedMm, cropMarks: state.cropMarks }), `${filename}_print_ready_8_per_sheet.pdf`);
       else downloadPdfBytes(bytes, `${filename}_print_ready.pdf`);
       setGenerating(null);
     } catch (err) {
@@ -1906,7 +1916,7 @@ export default function BadgeDesigner() {
     const reader = new FileReader();
     reader.onload = async () => {
       try {
-        const data = JSON.parse(reader.result);
+        const data = unpackSharedFiles(JSON.parse(reader.result));
         const next = inflateTemplate(data);
 
         // Re-register any fonts that came with embedded data, so they
@@ -1955,6 +1965,9 @@ export default function BadgeDesigner() {
     const active = pageSide === side;
     const pw = pd.page.width_mm * SCALE;
     const ph = pd.page.height_mm * SCALE;
+    // Backgrounds that include the bleed are shown as they'll be cut.
+    const bgBleed = state.bleedFill === "included" ? state.bleedMm * SCALE : 0;
+    const bgBox = { position: "absolute", left: -bgBleed, top: -bgBleed, width: pw + 2 * bgBleed, height: ph + 2 * bgBleed, maxWidth: "none" };
     const tintColor = pd.tint.enabled ? resolveMapping({ mapSource: pd.tint.mapSource, mappings: pd.tint.mappings, fallbackColor: pd.tint.fallbackColor }, pageData, "color") : null;
     const bgMapEnabled = pd.backgroundMap?.enabled;
     const bgMapMatch = bgMapEnabled ? resolveMapping(pd.backgroundMap, pageData, "image") : null;
@@ -1974,11 +1987,11 @@ export default function BadgeDesigner() {
             className="shadow-lg ring-1 ring-neutral-300 overflow-hidden"
           >
             {bgMapEnabled ? (
-              bgMapSrc && <img src={bgMapSrc} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
+              bgMapSrc && <img src={bgMapSrc} alt="" style={{ ...bgBox, objectFit: "cover" }} />
             ) : (
               pd.background && (
                 <>
-                  <img src={pd.background} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", filter: pd.tint.enabled ? "grayscale(1)" : "none" }} />
+                  <img src={pd.background} alt="" style={{ ...bgBox, objectFit: "cover", filter: pd.tint.enabled ? "grayscale(1)" : "none" }} />
                   {pd.tint.enabled && <div style={{ position: "absolute", inset: 0, background: tintColor, mixBlendMode: "multiply" }} />}
                 </>
               )
@@ -2170,6 +2183,10 @@ export default function BadgeDesigner() {
             <PrintLayoutMenu
               layout={state.printLayout}
               eightFits={eightPerSheetFits}
+              bleedMm={state.bleedMm}
+              bleedFill={state.bleedFill}
+              cropMarks={state.cropMarks}
+              onPrintChange={(patch) => setState((prev) => ({ ...prev, ...patch }), `print:${Object.keys(patch).join()}`)}
               onChange={(printLayout) => setState((prev) => ({ ...prev, printLayout }), "printLayout")}
               onClose={() => setShowPrintMenu(false)}
             />
@@ -2377,6 +2394,7 @@ export default function BadgeDesigner() {
               {activeTab === "extra" && (
                 <ExtraBadgesPanel
                   groups={state.extraGroups}
+                  images={loadedBackgrounds(state)}
                   frontFields={state.front.fields}
                   backFields={state.back.fields}
                   fieldName={fieldDisplayName}
@@ -2599,7 +2617,7 @@ function CompetitionMenu({ loaded, onLoadId, onOpenFile, onManage, onClose }) {
   );
 }
 
-function PrintLayoutMenu({ layout, eightFits, onChange, onClose }) {
+function PrintLayoutMenu({ layout, eightFits, bleedMm, bleedFill, cropMarks, onPrintChange, onChange, onClose }) {
   const option = (value, title, disabled) => (
     <label className={`flex items-start gap-2 ${disabled ? "text-neutral-400" : "cursor-pointer"}`}>
       <input type="radio" name="print-layout" className="mt-0.5" checked={layout === value} disabled={disabled} onChange={() => onChange(value)} />
@@ -2616,7 +2634,37 @@ function PrintLayoutMenu({ layout, eightFits, onChange, onClose }) {
         {layout === "eight" && eightFits && (
           <div className="text-[11px] text-neutral-500 leading-relaxed">Print double-sided, flip on the short edge, at actual size (100%). Each back lands behind its front.</div>
         )}
-        {!eightFits && <div className="text-[11px] text-amber-700 leading-relaxed">8 badges of this size don't fit on an A4 sheet: the most is 74.25 × 105 mm or 105 × 74.25 mm.</div>}
+        {!eightFits && <div className="text-[11px] text-amber-700 leading-relaxed">8 badges of this size don't fit on an A4 sheet: the most is 74.25 × 105 mm or 105 × 74.25 mm{bleedMm > 0 ? ", bleed included" : ""}.</div>}
+        <div className="space-y-2 border-t border-neutral-200 pt-2">
+          <label className="flex items-center gap-2">
+            <span className="flex-1">Bleed (mm per side)</span>
+            <input
+              type="number"
+              min={0}
+              max={10}
+              step={0.5}
+              value={bleedMm}
+              onChange={(e) => onPrintChange({ bleedMm: Math.min(10, Math.max(0, Number(e.target.value) || 0)) })}
+              className="w-16 text-sm px-2 py-1 border border-neutral-300 rounded-md"
+            />
+          </label>
+          {bleedMm > 0 && (
+            <div className="space-y-1 text-xs">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input type="radio" name="bleed-fill" className="mt-0.5" checked={bleedFill !== "included"} onChange={() => onPrintChange({ bleedFill: "mirror" })} />
+                <span>Fill it with the background's mirrored edges</span>
+              </label>
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input type="radio" name="bleed-fill" className="mt-0.5" checked={bleedFill === "included"} onChange={() => onPrintChange({ bleedFill: "included" })} />
+                <span>My backgrounds already include the bleed</span>
+              </label>
+            </div>
+          )}
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" checked={cropMarks} onChange={(e) => onPrintChange({ cropMarks: e.target.checked })} />
+            Crop marks
+          </label>
+        </div>
       </div>
     </>
   );
