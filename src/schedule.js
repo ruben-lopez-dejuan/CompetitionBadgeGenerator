@@ -311,6 +311,8 @@ export function listScheduleTexts(wcif) {
  *   buildCompetitorSchedules).
  * - showExtraTasks: false leaves out the tasks that aren't in the schedule
  *   (see extraTasks).
+ * - extraTaskStages: { [task name]: stageName } prints those tasks in that
+ *   stage's color.
  * - mergedRounds: round codes (e.g. ["333-r4"]) shown as one row instead
  *   of one per group. Only applies to round 2+/finals — safe there because
  *   those rows print "QR" anyway, since who's in which group isn't known
@@ -571,8 +573,9 @@ function extraTasks(person) {
   return (ext?.data?.assignments || []).filter((a) => a.staff && !Number.isNaN(Date.parse(a.startTime)));
 }
 
-// Extra tasks in the shape of buildBaseSchedule's rows, by day.
-function extraTaskRows(tasks, timeZone, options) {
+// Extra tasks in the shape of buildBaseSchedule's rows, by day. `stages` is
+// the competition's list, to color the tasks the user gave a stage.
+function extraTaskRows(tasks, timeZone, options, stages) {
   const days = {};
   if (options.showExtraTasks === false) return days;
   const seen = new Set();
@@ -589,6 +592,7 @@ function extraTaskRows(tasks, timeZone, options) {
     }
     (days[day] ||= []).push({
       time,
+      extraStage: stages.find((s) => s.name === options.extraTaskStages?.[a.staff]),
       event: options.labels?.activities?.[a.staff] || a.staff,
       activity_ids: [id],
       parent_ids: [null],
@@ -629,6 +633,7 @@ function withExtraRows(baseSchedule, extraRows) {
 export function buildCompetitorSchedules(wcif, timezoneOverride, options = {}) {
   const timeZone = resolveScheduleTimezone(wcif, timezoneOverride);
   const { baseSchedule } = buildBaseSchedule(wcif, timeZone, options);
+  const stages = buildStageList(wcif, options.stageColors);
   const mbld = options.mbldSubmission || {};
   const mbldAttempts = mbld.enabled ? mbldAttemptsByActivityId(wcif) : {};
 
@@ -643,7 +648,7 @@ export function buildCompetitorSchedules(wcif, timezoneOverride, options = {}) {
     }
 
     const personDays = {};
-    const personSchedule = withExtraRows(baseSchedule, extraTaskRows(extraTasks(person), timeZone, options));
+    const personSchedule = withExtraRows(baseSchedule, extraTaskRows(extraTasks(person), timeZone, options, stages));
 
     for (const [day, rounds] of Object.entries(personSchedule)) {
       personDays[day] = rounds.flatMap((round) => {
@@ -651,7 +656,7 @@ export function buildCompetitorSchedules(wcif, timezoneOverride, options = {}) {
         let task = null;
         let taskCode = null; // the assignment behind `task`, for the Task Key
         let color = null;
-        let stage = null;
+        let stage = round.extraStage?.name ?? null;
 
         if (mbld.enabled && round.activityCode === "other-multi") {
           const i = round.activity_ids.findIndex((id, k) => assignmentsById[id] || (round.parent_ids[k] && assignmentsById[round.parent_ids[k]]));
@@ -690,6 +695,7 @@ export function buildCompetitorSchedules(wcif, timezoneOverride, options = {}) {
             taskCode,
             color,
             stage,
+            specialColor: round.extraStage?.color,
             isSpecial,
             isSubsequentRound: !!round.isSubsequentRound,
             activityCode: round.activityCode,
@@ -726,9 +732,10 @@ export function buildGenericSchedule(wcif, timezoneOverride, options = {}) {
   let counter = 0;
   // Each day's extra tasks are those of whoever has the most, so the design
   // leaves room for the longest schedule.
+  const stages = buildStageList(wcif, options.stageColors);
   const mostExtraRows = {};
   for (const person of wcif.persons || []) {
-    for (const [day, rows] of Object.entries(extraTaskRows(extraTasks(person), timeZone, options))) {
+    for (const [day, rows] of Object.entries(extraTaskRows(extraTasks(person), timeZone, options, stages))) {
       if (rows.length > (mostExtraRows[day]?.length || 0)) mostExtraRows[day] = rows;
     }
   }
@@ -764,6 +771,7 @@ export function buildGenericSchedule(wcif, timezoneOverride, options = {}) {
         event: round.event,
         task,
         color,
+        specialColor: round.extraStage?.color,
         isSpecial,
         isSubsequentRound: !!round.isSubsequentRound,
         activityCode: round.activityCode,
