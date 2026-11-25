@@ -698,7 +698,7 @@ function inflateSide(s, fallbackW, fallbackH) {
 }
 // The global settings schedule.js's builders take (see buildBaseSchedule).
 function scheduleOptions(s) {
-  return { stageColors: s.stageColors, labels: s.scheduleLabels, mbldSubmission: s.mbldSubmission, mergedRounds: s.mergedRounds, showExtraTasks: s.showExtraTasks };
+  return { stageColors: s.stageColors, labels: s.scheduleLabels, mbldSubmission: s.mbldSubmission, mergedRounds: s.mergedRounds, showExtraTasks: s.showExtraTasks, extraTaskStages: s.extraTaskStages };
 }
 
 function inflateTemplate(data) {
@@ -746,6 +746,8 @@ function inflateTemplate(data) {
     mergedRounds: data.merged_rounds || [],
     // Rows for tasks that aren't in the schedule (see extraTasks in schedule.js).
     showExtraTasks: data.show_extra_tasks ?? true,
+    // Task name -> stage whose color it prints in.
+    extraTaskStages: data.extra_task_stages || {},
     // "single" (one badge per page) or "eight" (8 per A4 sheet, double-sided).
     printLayout: data.print_layout || "single",
     fonts: inflatedFonts,
@@ -1782,6 +1784,7 @@ export default function BadgeDesigner() {
       mbld_submission: state.mbldSubmission,
       merged_rounds: state.mergedRounds,
       show_extra_tasks: state.showExtraTasks,
+      extra_task_stages: state.extraTaskStages,
       print_layout: state.printLayout,
       fonts: fontsManifest,
       front: {
@@ -2273,6 +2276,14 @@ export default function BadgeDesigner() {
                     onMergedRoundsChange={(codes) => updateScheduleSettings({ mergedRounds: codes })}
                     showExtraTasks={state.showExtraTasks}
                     onShowExtraTasksChange={(showExtraTasks) => updateScheduleSettings({ showExtraTasks })}
+                    stages={state.sampleData.stages || []}
+                    extraTaskStages={state.extraTaskStages}
+                    onExtraTaskStageChange={(name, stage) => {
+                      const extraTaskStages = { ...state.extraTaskStages };
+                      if (stage) extraTaskStages[name] = stage;
+                      else delete extraTaskStages[name];
+                      updateScheduleSettings({ extraTaskStages });
+                    }}
                   />
                   <StageColorsPanel stages={state.sampleData.stages || []} stageColors={state.stageColors} onChange={setStageColor} />
                 </div>
@@ -3198,7 +3209,7 @@ function RoleMappingPanel({ roleMapping, onChange, persons }) {
 // Global schedule settings: renames for the texts the WCIF produces, and the
 // MBLD cube submission task. Per-table settings (day, title, column
 // headers, hidden activities) stay on each schedule field.
-function SchedulePanel({ texts, labels, onLabelChange, mbldSubmission, onMbldChange, mergedRounds, onMergedRoundsChange, showExtraTasks, onShowExtraTasksChange }) {
+function SchedulePanel({ texts, labels, onLabelChange, mbldSubmission, onMbldChange, mergedRounds, onMergedRoundsChange, showExtraTasks, onShowExtraTasksChange, stages, extraTaskStages, onExtraTaskStageChange }) {
   const merged = new Set(mergedRounds);
   const toggleRound = (code) => {
     const next = new Set(merged);
@@ -3295,8 +3306,31 @@ function SchedulePanel({ texts, labels, onLabelChange, mbldSubmission, onMbldCha
             <input type="checkbox" checked={showExtraTasks} onChange={(e) => onShowExtraTasksChange(e.target.checked)} />
             Show them
           </label>
+          {showExtraTasks &&
+            texts.activities
+              .filter((a) => a.extra)
+              .map((a) => {
+                const stage = stages.find((s) => s.name === extraTaskStages[a.name]);
+                return (
+                  <div key={a.name} className="flex items-center gap-1.5">
+                    <span className="flex-1 text-[11px] text-neutral-500 truncate" title={a.name}>{labels.activities?.[a.name] || a.name}</span>
+                    <span className="w-3 h-3 rounded-sm border border-neutral-300 shrink-0" style={{ background: stage?.color }} />
+                    <select
+                      aria-label={`Stage for ${a.name}`}
+                      value={stage?.name || ""}
+                      onChange={(e) => onExtraTaskStageChange(a.name, e.target.value)}
+                      className="w-28 shrink-0 text-xs px-1 py-1 border border-neutral-300 rounded-md bg-white"
+                    >
+                      <option value="">No color</option>
+                      {stages.map((s) => (
+                        <option key={s.name} value={s.name}>{s.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                );
+              })}
           <div className="text-[10px] text-neutral-400">
-            Tasks with no activity or stage, such as setups, from Competition Groups. Each one is a row only for the people who have it; the preview shows the most anyone has each day. Rename them under "Other activities".
+            Tasks with no activity or stage, such as setups, from Competition Groups. Each one is a row only for the people who have it; the preview shows the most anyone has each day. Pick a stage to print a task in its color. Rename them under "Other activities".
           </div>
         </div>
       )}

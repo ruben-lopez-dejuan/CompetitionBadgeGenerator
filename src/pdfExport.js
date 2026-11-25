@@ -1191,6 +1191,7 @@ export async function generateBadgesPdf(state, wcif, onProgress) {
     mbldSubmission: state.mbldSubmission || {},
     mergedRounds: state.mergedRounds || [],
     showExtraTasks: state.showExtraTasks,
+    extraTaskStages: state.extraTaskStages || {},
   });
   const stages = buildStageList(wcif, state.stageColors || {});
 
