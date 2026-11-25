@@ -529,6 +529,9 @@ function textFieldDefaults() {
     source: "name",
     staticText: "",
     template: "",
+    // Template fallbacks ({wcaId|NEWCOMER}) only for people who compete. The
+    // preview shows a competitor, so it only matters in the PDF.
+    competitorFallbacks: false,
     useValueMap: false,
     valueMap: [],
     genderVariants: false,
@@ -572,6 +575,7 @@ function inflateTextField(f) {
     source: f.source || "name",
     staticText: f.text || "",
     template: f.template || "",
+    competitorFallbacks: !!f.competitor_fallbacks,
     useValueMap: !!f.value_map,
     valueMap: f.value_map || [],
     genderVariants: !!f.gender_variants,
@@ -722,6 +726,8 @@ function inflateTemplate(data) {
   uidCounter = Math.max(uidCounter, maxN + 1);
 
   return {
+    // The WCA competition loaded by ID; empty if it came from a WCIF file.
+    competitionId: data.metadata?.competition_id || "",
     // gender: WCIF "m" / "f" / "o", for gender variants of mapped text.
     sampleData: { ...(data.sample_data || { name: "Sample Name" }), gender: data.sample_data?.gender ?? "m" },
     scheduleTimezone: data.schedule_timezone || "",
@@ -878,6 +884,7 @@ export default function BadgeDesigner() {
 
       setState((prev) => ({
         ...prev,
+        competitionId: typeof compIdOrFile === "string" ? wcif.id || compIdOrFile : "",
         wcif, // full raw WCIF, kept so "Generate PDF" can use REAL per-competitor data later
         // Every role and role combination present gets a rule (existing
         // rules and their labels are kept), see addRolesFromPersons.
@@ -1715,6 +1722,7 @@ export default function BadgeDesigner() {
             out.text = f.staticText;
           } else if (out.bindMode === "template") {
             out.template = f.template;
+            if (f.competitorFallbacks) out.competitor_fallbacks = true;
           } else {
             out.source = f.source;
             if (f.useValueMap) Object.assign(out, { value_map: f.valueMap, ...(f.genderVariants ? { gender_variants: true } : {}) });
@@ -1776,6 +1784,7 @@ export default function BadgeDesigner() {
     });
 
     const out = {
+      ...(state.competitionId ? { metadata: { competition_id: state.competitionId } } : {}),
       sample_data: state.sampleData,
       schedule_timezone: state.scheduleTimezone || "",
       role_mapping: state.roleMapping,
@@ -3598,6 +3607,12 @@ function PropertiesPanel({ field, sampleData, taskKeyTasks, fonts, loadLibraryFo
               <div className="text-[11px] text-neutral-500 mb-1">Template (use {"{field}"} placeholders, or {"{field|fallback}"} to show fallback text when a value is missing/empty. Enter for a line break)</div>
               <textarea value={field.template || ""} onChange={(e) => onChange({ template: e.target.value })} rows={2} className="w-full text-sm px-2 py-1.5 border border-neutral-300 rounded-md resize-y font-mono" placeholder="e.g. {wcaId|NEWCOMER} - ID {registrantId}" />
               <div className="text-[10px] text-neutral-400 mt-1">Available: {Object.keys(sampleData).map((k) => `{${k}}`).join("  ")}</div>
+              {/\{\w+\|/.test(field.template || "") && (
+                <label className="flex items-center gap-1.5 text-xs text-neutral-600 mt-1.5" title="Volunteers and organizers who don't compete get nothing instead of the fallback text. The preview shows a competitor.">
+                  <input type="checkbox" checked={!!field.competitorFallbacks} onChange={(e) => onChange({ competitorFallbacks: e.target.checked })} />
+                  Leave fallbacks blank for people who don't compete
+                </label>
+              )}
             </div>
           )}
 

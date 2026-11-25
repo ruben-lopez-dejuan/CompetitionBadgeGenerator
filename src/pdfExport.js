@@ -99,7 +99,8 @@ function normText(s) {
   return s == null ? s : String(s).normalize("NFC");
 }
 
-function resolveTemplateStr(str, ctx) {
+// blankFallbacks: print nothing instead of the fallback texts.
+function resolveTemplateStr(str, ctx, blankFallbacks = false) {
   return normText((str || "").replace(/\{(\w+)(?:\|([^}]*))?\}/g, (_, k, fallback) => {
     const has = Object.prototype.hasOwnProperty.call(ctx, k);
     const v = ctx[k];
@@ -109,14 +110,16 @@ function resolveTemplateStr(str, ctx) {
     // placeholder (surfaces typos); otherwise empty/missing values use the
     // fallback text if one was given, an empty string if not.
     if (!has && fallback === undefined) return `{${k}}`;
-    if (isEmpty) return fallback !== undefined ? fallback : "";
+    if (isEmpty) return fallback !== undefined && !blankFallbacks ? fallback : "";
     return v;
   }));
 }
 
 function resolveTextValue(field, ctx) {
   if (field.bindMode === "static") return normText(field.staticText ?? field.text ?? "");
-  if (field.bindMode === "template") return resolveTemplateStr(field.template, ctx);
+  if (field.bindMode === "template") {
+    return resolveTemplateStr(field.template, ctx, ctx.notCompeting && (field.competitorFallbacks ?? field.competitor_fallbacks));
+  }
   const raw = ctx[field.source];
   // Only when "Map displayed value" is on (useValueMap is undefined for a
   // field taken straight from an exported template, where value_map is
@@ -1133,6 +1136,8 @@ function buildPersonContext(person, sampleData, competitorSchedules, stages, rol
     gender: person.gender || "",
     schedules: competitorSchedules[String(regId)] || {},
     stages,
+    // Volunteers, or organizers without a registration.
+    notCompeting: !person.registration || person.registration.isCompeting === false,
   });
   return ctx;
 }
