@@ -5,7 +5,7 @@ import { buildCompetitorSchedules, buildStageList, stagesForPerson, taskKeyRows 
 import { applyTextCase, breakPoints, layoutTextFrame } from "./textLayout.js";
 import { isFullCrop, placeImage } from "./imageCrop.js";
 import { personRole as matchPersonRole } from "./roles.js";
-import { buildExtraSchedules, extraBadgeData, extraBadgeName, extraBadgeSide } from "./extraBadges.js";
+import { buildExtraSchedules, extraBadgeData, extraBadgeName, extraBadgeSide, isBlankTemplate } from "./extraBadges.js";
 import { pickMappedLabel } from "./valueMap.js";
 
 const MM_TO_PT = 2.834645669;
@@ -119,6 +119,7 @@ function resolveTemplateStr(str, ctx, blankFallbacks = false) {
 function resolveTextValue(field, ctx) {
   if (field.bindMode === "static") return normText(field.staticText ?? field.text ?? "");
   if (field.bindMode === "template") {
+    if (isBlankTemplate(field.template, ctx)) return "";
     return resolveTemplateStr(field.template, ctx, ctx.blankFallbacks || (ctx.notCompeting && (field.competitorFallbacks ?? field.competitor_fallbacks)));
   }
   const raw = ctx[field.source];

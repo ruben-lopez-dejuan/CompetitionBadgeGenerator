@@ -61,6 +61,15 @@ export function extraBadgeData(group, i, sampleData, schedules, stages) {
   };
 }
 
+// Whether a template text has nothing to say on an extra badge: all of its
+// placeholders are empty, so only the text around them would be left (e.g.
+// " - ID " from "{wcaId} - ID {registrantId}").
+export function isBlankTemplate(template, data) {
+  if (!data.blankFallbacks) return false;
+  const keys = [...(template || "").matchAll(/\{(\w+)(?:\|[^}]*)?\}/g)].map((m) => m[1]);
+  return keys.length > 0 && keys.every((k) => k in data && (data[k] ?? "") === "");
+}
+
 // A side of the template as the group prints it.
 export function extraBadgeSide(sideTpl, sideKey, group) {
   const hidden = new Set(group.hiddenFieldIds);
