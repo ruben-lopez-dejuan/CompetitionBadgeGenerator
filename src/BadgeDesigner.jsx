@@ -58,7 +58,7 @@ import { generateBadgesPdf, downloadPdfBytes, eightPerSheetLayout, imposeEightPe
 import defaultTemplate from "./defaultTemplate.json";
 import { applyTextCase, DEFAULT_FRAME, layoutTextFrame, shrinkToWidth } from "./textLayout.js";
 import { FULL_CROP, isFullCrop, normalizeCrop, placeImage } from "./imageCrop.js";
-import { addRolesFromPersons, countByRule } from "./roles.js";
+import { addRolesFromPersons, countByRule, teamsWithoutRule } from "./roles.js";
 import { pickMappedLabel } from "./valueMap.js";
 import { useHistory } from "./editor/useHistory.js";
 import ShortcutsDialog from "./editor/ShortcutsDialog.jsx";
@@ -3128,7 +3128,9 @@ function RoleMappingPanel({ roleMapping, onChange, persons }) {
   // With a WCIF loaded: how many people each rule catches (first match wins).
   const tally = persons ? countByRule(roleMapping, persons) : null;
   const people = (n) => `${n} ${n === 1 ? "person" : "people"}`;
+  const teams = persons ? teamsWithoutRule(roleMapping, persons) : [];
 
+  const addTeams = (list) => onChange({ rules: [...rules, ...list.map((t) => ({ wcaRole: t.wcaRole, label: "staff" }))] });
   const updateRule = (i, patch) => onChange({ rules: rules.map((r, idx) => (idx === i ? { ...r, ...patch } : r)) });
   const addRule = () => onChange({ rules: [...rules, { wcaRole: "", label: "" }] });
   const removeRule = (i) => onChange({ rules: rules.filter((_, idx) => idx !== i) });
@@ -3146,7 +3148,7 @@ function RoleMappingPanel({ roleMapping, onChange, persons }) {
         <Users size={12} /> ROLE MAPPING
       </div>
       <div className="text-[11px] text-neutral-400">
-        Maps a competitor's WCIF role(s) to the "role" value used throughout the template (text, tint, background images, etc). Checked top to bottom — the first matching rule wins, since a person can hold more than one role at once (e.g. an organizer who's also judging). Anyone matching nothing below gets the fallback. Join roles with "+" (e.g. delegate+organizer) for people who have all of them — keep those above the single roles. Loading a WCIF adds every role and combination it contains.
+        Maps a competitor's WCIF role(s) to the "role" value used throughout the template (text, tint, background images, etc). Checked top to bottom — the first matching rule wins, since a person can hold more than one role at once (e.g. an organizer who's also judging). Anyone matching nothing below gets the fallback. Join roles with "+" (e.g. delegate+organizer) for people who have all of them — keep those above the single roles. Loading a WCIF adds every role and combination it contains. "team:" followed by a team name matches the people in that team.
       </div>
 
       <div className="space-y-1.5">
@@ -3188,6 +3190,23 @@ function RoleMappingPanel({ roleMapping, onChange, persons }) {
       <button onClick={addRule} className="flex items-center gap-1 text-xs text-blue-600 hover:underline">
         <Plus size={11} /> Add rule
       </button>
+
+      {teams.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <div className="text-[11px] font-semibold text-neutral-600">Teams without a rule</div>
+            <button onClick={() => addTeams(teams)} className="text-[11px] text-blue-600 hover:underline">Add all</button>
+          </div>
+          <div className="text-[10px] text-neutral-400">These people have a team in the WCIF but match no rule, so they get the fallback. Click a team to add a rule giving it the role value "staff".</div>
+          <div className="flex flex-wrap gap-1">
+            {teams.map((t) => (
+              <button key={t.wcaRole} onClick={() => addTeams([t])} title={people(t.count)} className="flex items-center gap-1 text-[11px] px-2 py-0.5 border border-neutral-300 rounded-full hover:bg-neutral-50">
+                <Plus size={10} /> {t.name} <span className="text-neutral-400">{t.count}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div>
         <div className="text-[11px] text-neutral-500 mb-1">Fallback (no rule matched){tally ? ` — ${people(tally.fallback)}` : ""}</div>
