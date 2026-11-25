@@ -40,6 +40,7 @@ import {
   FolderOpen,
   Save,
   CopyPlus,
+  BadgePlus,
   BringToFront,
   SendToBack,
   ArrowUp,
@@ -53,7 +54,7 @@ import {
   AlignHorizontalDistributeCenter,
   AlignVerticalDistributeCenter,
 } from "lucide-react";
-import { buildGenericSchedule, buildStageList, listScheduleTexts, longestTaskKeyRows, resolveScheduleTimezone, taskKeyRows } from "./schedule.js";
+import { buildGenericSchedule, buildStageList, listScheduleTexts, longestTaskKeyRows, resolveScheduleTimezone, stagesForPerson, taskKeyRows } from "./schedule.js";
 import { generateBadgesPdf, downloadPdfBytes, eightPerSheetLayout, imposeEightPerSheet } from "./pdfExport.js";
 import defaultTemplate from "./defaultTemplate.json";
 import { applyTextCase, DEFAULT_FRAME, layoutTextFrame, shrinkToWidth } from "./textLayout.js";
@@ -65,6 +66,8 @@ import ShortcutsDialog from "./editor/ShortcutsDialog.jsx";
 import AboutDialog from "./editor/AboutDialog.jsx";
 import FontPicker from "./editor/FontPicker.jsx";
 import Logo from "./editor/Logo.jsx";
+import ExtraBadgesPanel from "./editor/ExtraBadgesPanel.jsx";
+import { buildExtraSchedules, exportExtraGroup, extraBadgeData, extraBadgeSide, inflateExtraGroup, newExtraGroup } from "./extraBadges.js";
 import { libraryFamily } from "./fontLibrary.js";
 
 const SCALE = 5.2; // px per mm
@@ -452,7 +455,7 @@ function resolveTemplate(template, sampleData) {
     // an unknown key — it's clearly intentional ("use this text when
     // there's nothing to show"), so honor it.
     if (!has && fallback === undefined) return `{${k}}`;
-    if (isEmpty) return fallback !== undefined ? fallback : "";
+    if (isEmpty) return fallback !== undefined && !sampleData.blankFallbacks ? fallback : "";
     return v;
   });
 }
@@ -756,6 +759,9 @@ function inflateTemplate(data) {
     extraTaskStages: data.extra_task_stages || {},
     // "single" (one badge per page) or "eight" (8 per A4 sheet, double-sided).
     printLayout: data.print_layout || "single",
+    // Badges that aren't for anyone in the WCIF (see extraBadges.js).
+    extraGroups: (data.extra_badges || []).map(inflateExtraGroup),
+    extraBadgesInMainPdf: !!data.extra_badges_in_main_pdf,
     fonts: inflatedFonts,
     front: inflateSide(data.front, 105, 148),
     back: inflateSide(data.back, 148, 105),
@@ -789,6 +795,7 @@ const LEFT_TABS = [
   { id: "layers", label: "Layers", icon: Layers },
   { id: "competition", label: "Competition", icon: Trophy },
   { id: "background", label: "Background", icon: Wallpaper },
+  { id: "extra", label: "Extra badges", icon: BadgePlus },
   { id: "fonts", label: "Fonts", icon: Type },
   { id: "data", label: "Data", icon: Database },
 ];
@@ -816,6 +823,7 @@ export default function BadgeDesigner() {
   const [side, setSide] = useState("front");
   const [rawSelectedIds, setSelectedIds] = useState([]);
   const [activeTab, setActiveTab] = useState("elements"); // left panel; null = closed
+  const [previewExtraId, setPreviewExtraId] = useState(null); // extra badge group shown on the canvas
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [generating, setGenerating] = useState(null); // null | { done, total }
@@ -1271,6 +1279,32 @@ export default function BadgeDesigner() {
   };
   const updateMbldSubmission = (patch) => updateScheduleSettings({ mbldSubmission: { ...state.mbldSubmission, ...patch } });
   const scheduleTexts = state.wcif ? listScheduleTexts(state.wcif) : null;
+  // The group of extra badges previewed on the canvas, while its tab is open.
+  const previewGroup = (activeTab === "extra" && state.extraGroups.find((g) => g.id === previewExtraId)) || null;
+  const previewsExtra = !!previewGroup;
+  const extraSchedules = useMemo(
+    () =>
+      previewsExtra && state.wcif
+        ? buildExtraSchedules(state.wcif, state.scheduleTimezone || undefined, {
+            stageColors: state.stageColors,
+            labels: state.scheduleLabels,
+            mbldSubmission: state.mbldSubmission,
+            mergedRounds: state.mergedRounds,
+            showExtraTasks: state.showExtraTasks,
+            extraTaskStages: state.extraTaskStages,
+          })
+        : {},
+    [previewsExtra, state.wcif, state.scheduleTimezone, state.stageColors, state.scheduleLabels, state.mbldSubmission, state.mergedRounds, state.showExtraTasks, state.extraTaskStages]
+  );
+  const updateExtraGroup = (id, patch) =>
+    setState((s) => ({ ...s, extraGroups: s.extraGroups.map((g) => (g.id === id ? { ...g, ...patch } : g)) }), `extra:${id}:${Object.keys(patch).join()}`);
+  const duplicateExtraGroup = (id) =>
+    setState((s) => {
+      const i = s.extraGroups.findIndex((g) => g.id === id);
+      const copy = { ...inflateExtraGroup(exportExtraGroup(s.extraGroups[i])), title: `${s.extraGroups[i].title} copy` };
+      return { ...s, extraGroups: [...s.extraGroups.slice(0, i + 1), copy, ...s.extraGroups.slice(i + 1)] };
+    });
+
   const taskKeyTasks = useMemo(
     () =>
       state.wcif
@@ -1795,6 +1829,8 @@ export default function BadgeDesigner() {
       show_extra_tasks: state.showExtraTasks,
       extra_task_stages: state.extraTaskStages,
       print_layout: state.printLayout,
+      extra_badges: state.extraGroups.map(exportExtraGroup),
+      extra_badges_in_main_pdf: state.extraBadgesInMainPdf,
       fonts: fontsManifest,
       front: {
         page: state.front.page,
@@ -1829,12 +1865,28 @@ export default function BadgeDesigner() {
     Math.max(state.front.page.height_mm, state.back.page.height_mm)
   );
 
-  const generateAllBadges = async () => {
+  const generateAllBadges = () => {
     if (!state.wcif) {
       setActiveTab("competition");
       alert("Load a competition first (Competition tab) — the PDF is built from real competitors, not the sample preview data.");
       return;
     }
+    generatePdf(state.wcif.id || "badges", { extraGroups: state.extraBadgesInMainPdf ? state.extraGroups : [] });
+  };
+
+  const generateExtraBadges = (groups) => {
+    const needsSchedule = groups.some((g) =>
+      ["front", "back"].some((key) => extraBadgeSide(state[key], key, g).fields.some((f) => f.type === "schedule" || f.type === "taskkey"))
+    );
+    if (!state.wcif && needsSchedule) {
+      alert("These badges print the schedule or the task key, so load the competition first — or leave those elements out of the group.");
+      return;
+    }
+    const title = groups.length === 1 ? groups[0].title.trim().replace(/[^\p{L}\p{N}]+/gu, "_") : "";
+    generatePdf([state.wcif?.id, "extra_badges", title].filter(Boolean).join("_"), { people: false, extraGroups: groups });
+  };
+
+  const generatePdf = async (filename, parts) => {
     const eightPerSheet = state.printLayout === "eight";
     if (eightPerSheet && !eightPerSheetFits) {
       setShowPrintMenu(true);
@@ -1843,9 +1895,9 @@ export default function BadgeDesigner() {
     }
     setGenerating({ done: 0, total: 0 });
     try {
-      const bytes = await generateBadgesPdf(state, state.wcif, (done, total) => setGenerating({ done, total }));
-      if (eightPerSheet) downloadPdfBytes(await imposeEightPerSheet(bytes), `${state.wcif.id || "badges"}_print_ready_8_per_sheet.pdf`);
-      else downloadPdfBytes(bytes, `${state.wcif.id || "badges"}_print_ready.pdf`);
+      const bytes = await generateBadgesPdf(state, state.wcif, (done, total) => setGenerating({ done, total }), parts);
+      if (eightPerSheet) downloadPdfBytes(await imposeEightPerSheet(bytes), `${filename}_print_ready_8_per_sheet.pdf`);
+      else downloadPdfBytes(bytes, `${filename}_print_ready.pdf`);
       setGenerating(null);
     } catch (err) {
       console.error(err);
@@ -1897,13 +1949,16 @@ export default function BadgeDesigner() {
 
   // One page (side) of the badge on the canvas, at the current zoom.
   const renderPage = (pageSide) => {
-    const pd = state[pageSide];
+    const pd = previewGroup ? extraBadgeSide(state[pageSide], pageSide, previewGroup) : state[pageSide];
+    const pageData = previewGroup
+      ? extraBadgeData(previewGroup, 0, state.sampleData, extraSchedules, stagesForPerson(state.sampleData.stages || [], extraSchedules))
+      : state.sampleData;
     const active = pageSide === side;
     const pw = pd.page.width_mm * SCALE;
     const ph = pd.page.height_mm * SCALE;
-    const tintColor = pd.tint.enabled ? resolveMapping({ mapSource: pd.tint.mapSource, mappings: pd.tint.mappings, fallbackColor: pd.tint.fallbackColor }, state.sampleData, "color") : null;
+    const tintColor = pd.tint.enabled ? resolveMapping({ mapSource: pd.tint.mapSource, mappings: pd.tint.mappings, fallbackColor: pd.tint.fallbackColor }, pageData, "color") : null;
     const bgMapEnabled = pd.backgroundMap?.enabled;
-    const bgMapMatch = bgMapEnabled ? resolveMapping(pd.backgroundMap, state.sampleData, "image") : null;
+    const bgMapMatch = bgMapEnabled ? resolveMapping(pd.backgroundMap, pageData, "image") : null;
     const bgMapSrc = bgMapEnabled ? (bgMapMatch ? bgMapMatch.preview : pd.backgroundMap.fallbackPreview) : null;
     return (
       <div key={pageSide} className="flex flex-col items-start shrink-0">
@@ -1937,8 +1992,8 @@ export default function BadgeDesigner() {
                 selected={active && selectedIds.includes(f.id)}
                 showHandles={active && selectedIds.length === 1 && selectedIds[0] === f.id}
                 outsideMargin={outsideIds.includes(f.id)}
-                sampleData={state.sampleData}
-                taskKeyTasks={taskKeyTasks}
+                sampleData={pageData}
+                taskKeyTasks={previewGroup ? taskKeyRows(state.scheduleLabels) : taskKeyTasks}
                 onPointerDownMove={(e) => startDrag(e, f, "move", pageSide)}
                 onPointerDownResize={(e) => startDrag(e, f, "resize", pageSide)}
               />
@@ -2318,6 +2373,29 @@ export default function BadgeDesigner() {
                   <TintPanel tint={sideData.tint} sampleData={state.sampleData} onChange={updateTint} />
                   <BackgroundMapPanel bgMap={sideData.backgroundMap} sampleData={state.sampleData} onChange={updateBackgroundMap} />
                 </div>
+              )}
+
+              {activeTab === "extra" && (
+                <ExtraBadgesPanel
+                  groups={state.extraGroups}
+                  frontFields={state.front.fields}
+                  backFields={state.back.fields}
+                  fieldName={fieldDisplayName}
+                  previewId={previewExtraId}
+                  onPreview={setPreviewExtraId}
+                  inMainPdf={state.extraBadgesInMainPdf}
+                  onInMainPdfChange={(extraBadgesInMainPdf) => setState((s) => ({ ...s, extraBadgesInMainPdf }))}
+                  onAdd={() => {
+                    const group = newExtraGroup(state.extraGroups.length + 1);
+                    setState((s) => ({ ...s, extraGroups: [...s.extraGroups, group] }));
+                    setPreviewExtraId(group.id);
+                  }}
+                  onUpdate={updateExtraGroup}
+                  onDuplicate={duplicateExtraGroup}
+                  onRemove={(id) => setState((s) => ({ ...s, extraGroups: s.extraGroups.filter((g) => g.id !== id) }))}
+                  onGenerate={generateExtraBadges}
+                  generating={!!generating}
+                />
               )}
 
               {activeTab === "fonts" && (
@@ -2848,7 +2926,7 @@ function FieldBox({ field, scale, selected, showHandles, outsideMargin, sampleDa
 
                         {/* Task Cell */}
                         <div className="w-9 flex items-center justify-center font-bold shrink-0 px-0.5" style={{ backgroundColor: r.color ? hexToRgba(r.color, SCHEDULE_COLORS.taskCellTint) : undefined }}>
-                          {r.task || `<e${bi}>`}
+                          {r.task}
                         </div>
                       </>
                     )}

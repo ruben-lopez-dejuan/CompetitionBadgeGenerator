@@ -5,6 +5,7 @@ import { buildCompetitorSchedules, buildStageList, stagesForPerson, taskKeyRows 
 import { applyTextCase, breakPoints, layoutTextFrame } from "./textLayout.js";
 import { isFullCrop, placeImage } from "./imageCrop.js";
 import { personRole as matchPersonRole } from "./roles.js";
+import { buildExtraSchedules, extraBadgeData, extraBadgeName, extraBadgeSide } from "./extraBadges.js";
 import { pickMappedLabel } from "./valueMap.js";
 
 const MM_TO_PT = 2.834645669;
@@ -118,7 +119,7 @@ function resolveTemplateStr(str, ctx, blankFallbacks = false) {
 function resolveTextValue(field, ctx) {
   if (field.bindMode === "static") return normText(field.staticText ?? field.text ?? "");
   if (field.bindMode === "template") {
-    return resolveTemplateStr(field.template, ctx, ctx.notCompeting && (field.competitorFallbacks ?? field.competitor_fallbacks));
+    return resolveTemplateStr(field.template, ctx, ctx.blankFallbacks || (ctx.notCompeting && (field.competitorFallbacks ?? field.competitor_fallbacks)));
   }
   const raw = ctx[field.source];
   // Only when "Map displayed value" is on (useValueMap is undefined for a
@@ -570,7 +571,7 @@ function drawColorblockField(page, field, ctx, originX, originY) {
 }
 
 async function drawQrField(page, field, ctx, pdfDoc, imageCache, originX, originY) {
-  const target = resolveTemplateStr(field.target, ctx);
+  const target = resolveTemplateStr(field.target, ctx, ctx.blankFallbacks);
   const dataUrl = await QRCode.toDataURL(target, { margin: 1, width: 300 });
   const embedded = await embedImageCached(pdfDoc, dataUrl, imageCache);
   if (!embedded) return;
@@ -1152,8 +1153,11 @@ function buildPersonContext(person, sampleData, competitorSchedules, stages, rol
  * @param {object} state    - the designer's full app state (front/back/fonts)
  * @param {object} wcif     - the loaded competition's WCIF JSON
  * @param {(done:number,total:number)=>void} [onProgress]
+ * @param {object} [parts]  - people: false leaves out the competition's
+ *   people; extraGroups: groups of extra badges (see extraBadges.js), added
+ *   after them. Without people, wcif can be null.
  */
-export async function generateBadgesPdf(state, wcif, onProgress) {
+export async function generateBadgesPdf(state, wcif, onProgress, { people = true, extraGroups = [] } = {}) {
   const pdfDoc = await PDFDocument.create();
   pdfDoc.registerFontkit(fontkit);
 
@@ -1190,22 +1194,40 @@ export async function generateBadgesPdf(state, wcif, onProgress) {
     }
   }
 
-  const competitorSchedules = buildCompetitorSchedules(wcif, state.scheduleTimezone || undefined, {
+  const scheduleOptions = {
     stageColors: state.stageColors || {},
     labels: state.scheduleLabels || {},
     mbldSubmission: state.mbldSubmission || {},
     mergedRounds: state.mergedRounds || [],
     showExtraTasks: state.showExtraTasks,
     extraTaskStages: state.extraTaskStages || {},
-  });
-  const stages = buildStageList(wcif, state.stageColors || {});
+  };
+  const timezone = state.scheduleTimezone || undefined;
+  const competitorSchedules = people ? buildCompetitorSchedules(wcif, timezone, scheduleOptions) : {};
+  const stages = wcif ? buildStageList(wcif, state.stageColors || {}) : [];
 
-  const persons = (wcif.persons || []).filter(
-    (p) => (p.registration && p.registration.status === "accepted") || (!p.registration && p.roles && p.roles.length)
-  );
+  const persons = people
+    ? (wcif.persons || []).filter((p) => (p.registration && p.registration.status === "accepted") || (!p.registration && p.roles && p.roles.length))
+    : [];
+
+  // One entry per badge: the sides to print and the data to fill them with.
+  const badges = persons.map((person) => ({
+    sides: state,
+    ctx: buildPersonContext(person, state.sampleData, competitorSchedules, stages, state.roleMapping),
+  }));
+  const extraSchedules = wcif && extraGroups.length ? buildExtraSchedules(wcif, timezone, scheduleOptions) : {};
+  const extraNames = [];
+  for (const group of extraGroups) {
+    const sides = { front: extraBadgeSide(state.front, "front", group), back: extraBadgeSide(state.back, "back", group) };
+    for (let i = 0; i < group.count; i++) {
+      const name = normText(extraBadgeName(group, i));
+      badges.push({ sides, ctx: { ...extraBadgeData(group, i, state.sampleData, extraSchedules, stages), name } });
+      extraNames.push({ name });
+    }
+  }
 
   console.log("Fetching any needed script fonts from Google Fonts...");
-  await loadGoogleScriptFonts(pdfDoc, fonts, persons);
+  await loadGoogleScriptFonts(pdfDoc, fonts, [...persons, ...extraNames]);
 
   const imageCache = new Map();
 
@@ -1213,16 +1235,17 @@ export async function generateBadgesPdf(state, wcif, onProgress) {
     const pageWMm = sideTpl.page.width_mm;
     const pageHMm = sideTpl.page.height_mm;
     const page = pdfDoc.addPage([mmv(pageWMm), mmv(pageHMm)]);
+    // A page nothing is drawn on has no content, and couldn't be imposed.
+    page.pushOperators(pushGraphicsState(), popGraphicsState());
     return { page, pageWMm, pageHMm };
   };
 
-  for (let idx = 0; idx < persons.length; idx++) {
-    const person = persons[idx];
-    const ctx = buildPersonContext(person, state.sampleData, competitorSchedules, stages, state.roleMapping);
+  for (let idx = 0; idx < badges.length; idx++) {
+    const { sides, ctx } = badges[idx];
     ctx.scheduleLabels = state.scheduleLabels;
 
     for (const sideKey of ["front", "back"]) {
-      const sideTpl = state[sideKey];
+      const sideTpl = sides[sideKey];
       const { page, pageWMm, pageHMm } = await renderSide(sideTpl);
 
       await drawBackground(page, { background: sideTpl.background, tint: sideTpl.tint, backgroundMap: sideTpl.backgroundMap }, ctx, pdfDoc, pageWMm, pageHMm, imageCache);
@@ -1258,7 +1281,7 @@ export async function generateBadgesPdf(state, wcif, onProgress) {
       }
     }
 
-    if (onProgress) onProgress(idx + 1, persons.length);
+    if (onProgress) onProgress(idx + 1, badges.length);
   }
 
   return pdfDoc.save();
