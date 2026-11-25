@@ -766,6 +766,9 @@ function inflateTemplate(data) {
     bleedMm: data.bleed_mm || 0,
     bleedFill: data.bleed_fill || "mirror",
     cropMarks: !!data.crop_marks,
+    // PDF in CMYK, with the printer's ICC profile: { name, description, dataUrl }.
+    cmyk: !!data.cmyk,
+    cmykProfile: data.cmyk_profile ? { name: data.cmyk_profile.name, description: data.cmyk_profile.description, dataUrl: data.cmyk_profile.data } : null,
     // Badges that aren't for anyone in the WCIF (see extraBadges.js).
     extraGroups: (data.extra_badges || []).map(inflateExtraGroup),
     extraBadgesInMainPdf: !!data.extra_badges_in_main_pdf,
@@ -1835,6 +1838,8 @@ export default function BadgeDesigner() {
       bleed_mm: state.bleedMm,
       bleed_fill: state.bleedFill,
       crop_marks: state.cropMarks,
+      cmyk: state.cmyk,
+      cmyk_profile: state.cmykProfile ? { name: state.cmykProfile.name, description: state.cmykProfile.description, data: state.cmykProfile.dataUrl } : null,
       extra_badges: state.extraGroups.map(exportExtraGroup),
       extra_badges_in_main_pdf: state.extraBadgesInMainPdf,
       fonts: fontsManifest,
@@ -1899,11 +1904,20 @@ export default function BadgeDesigner() {
       alert("8 badges of this size don't fit on an A4 sheet. Make the badge smaller or print one badge per page.");
       return;
     }
+    if (state.cmyk && !state.cmykProfile) {
+      setShowPrintMenu(true);
+      alert("Choose your printer's color profile to make the PDF in CMYK.");
+      return;
+    }
     setGenerating({ done: 0, total: 0 });
     try {
-      const bytes = await generateBadgesPdf(state, state.wcif, (done, total) => setGenerating({ done, total }), { ...parts, cropMarks: state.cropMarks && !eightPerSheet });
-      if (eightPerSheet) downloadPdfBytes(await imposeEightPerSheet(bytes, { bleedMm: state.bleedMm, cropMarks: state.cropMarks }), `${filename}_print_ready_8_per_sheet.pdf`);
-      else downloadPdfBytes(bytes, `${filename}_print_ready.pdf`);
+      let bytes = await generateBadgesPdf(state, state.wcif, (done, total) => setGenerating({ done, total }), { ...parts, cropMarks: state.cropMarks && !eightPerSheet, inCmyk: state.cmyk });
+      if (eightPerSheet) bytes = await imposeEightPerSheet(bytes, { bleedMm: state.bleedMm, cropMarks: state.cropMarks, inCmyk: state.cmyk });
+      if (state.cmyk) {
+        const { convertPdfToCmyk } = await import("./cmyk.js");
+        bytes = await convertPdfToCmyk(bytes, new Uint8Array(await (await fetch(state.cmykProfile.dataUrl)).arrayBuffer()));
+      }
+      downloadPdfBytes(bytes, `${filename}_print_ready${eightPerSheet ? "_8_per_sheet" : ""}${state.cmyk ? "_cmyk" : ""}.pdf`);
       setGenerating(null);
     } catch (err) {
       console.error(err);
@@ -2186,6 +2200,8 @@ export default function BadgeDesigner() {
               bleedMm={state.bleedMm}
               bleedFill={state.bleedFill}
               cropMarks={state.cropMarks}
+              cmyk={state.cmyk}
+              cmykProfile={state.cmykProfile}
               onPrintChange={(patch) => setState((prev) => ({ ...prev, ...patch }), `print:${Object.keys(patch).join()}`)}
               onChange={(printLayout) => setState((prev) => ({ ...prev, printLayout }), "printLayout")}
               onClose={() => setShowPrintMenu(false)}
@@ -2617,7 +2633,24 @@ function CompetitionMenu({ loaded, onLoadId, onOpenFile, onManage, onClose }) {
   );
 }
 
-function PrintLayoutMenu({ layout, eightFits, bleedMm, bleedFill, cropMarks, onPrintChange, onChange, onClose }) {
+function PrintLayoutMenu({ layout, eightFits, bleedMm, bleedFill, cropMarks, cmyk, cmykProfile, onPrintChange, onChange, onClose }) {
+  const loadProfile = async (file) => {
+    try {
+      const { cmykProfileDescription } = await import("./cmyk.js");
+      const description = await cmykProfileDescription(new Uint8Array(await file.arrayBuffer()));
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error);
+        // With a type: browsers don't agree on the one of .icc files.
+        reader.readAsDataURL(new Blob([file], { type: "application/vnd.iccprofile" }));
+      });
+      onPrintChange({ cmykProfile: { name: file.name, description, dataUrl } });
+    } catch (err) {
+      console.error(err);
+      alert(`Couldn't load the color profile: ${err.message}`);
+    }
+  };
   const option = (value, title, disabled) => (
     <label className={`flex items-start gap-2 ${disabled ? "text-neutral-400" : "cursor-pointer"}`}>
       <input type="radio" name="print-layout" className="mt-0.5" checked={layout === value} disabled={disabled} onChange={() => onChange(value)} />
@@ -2664,6 +2697,37 @@ function PrintLayoutMenu({ layout, eightFits, bleedMm, bleedFill, cropMarks, onP
             <input type="checkbox" checked={cropMarks} onChange={(e) => onPrintChange({ cropMarks: e.target.checked })} />
             Crop marks
           </label>
+        </div>
+        <div className="space-y-2 border-t border-neutral-200 pt-2">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" checked={cmyk} onChange={(e) => onPrintChange({ cmyk: e.target.checked })} />
+            CMYK colors
+          </label>
+          {cmyk && (
+            <div className="space-y-1 text-xs">
+              <label className="block px-2 py-1.5 border border-neutral-300 rounded-md text-center cursor-pointer hover:bg-neutral-50">
+                {cmykProfile ? "Change the color profile" : "Choose a color profile (.icc, .icm)"}
+                <input
+                  type="file"
+                  accept=".icc,.icm"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files[0];
+                    e.target.value = "";
+                    if (file) loadProfile(file);
+                  }}
+                />
+              </label>
+              {cmykProfile && (
+                <div className="truncate" title={cmykProfile.name}>
+                  {cmykProfile.description || cmykProfile.name}
+                </div>
+              )}
+              <div className="text-[11px] text-neutral-500 leading-relaxed">
+                Ask your printer which profile to use. The editor still shows RGB: vivid colors can come out duller on paper.
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </>
