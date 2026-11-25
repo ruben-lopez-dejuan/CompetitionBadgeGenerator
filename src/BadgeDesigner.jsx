@@ -726,6 +726,8 @@ function inflateTemplate(data) {
   uidCounter = Math.max(uidCounter, maxN + 1);
 
   return {
+    // The WCA competition loaded by ID; empty if it came from a WCIF file.
+    competitionId: data.metadata?.competition_id || "",
     // gender: WCIF "m" / "f" / "o", for gender variants of mapped text.
     sampleData: { ...(data.sample_data || { name: "Sample Name" }), gender: data.sample_data?.gender ?? "m" },
     scheduleTimezone: data.schedule_timezone || "",
@@ -882,6 +884,7 @@ export default function BadgeDesigner() {
 
       setState((prev) => ({
         ...prev,
+        competitionId: typeof compIdOrFile === "string" ? wcif.id || compIdOrFile : "",
         wcif, // full raw WCIF, kept so "Generate PDF" can use REAL per-competitor data later
         // Every role and role combination present gets a rule (existing
         // rules and their labels are kept), see addRolesFromPersons.
@@ -1781,6 +1784,7 @@ export default function BadgeDesigner() {
     });
 
     const out = {
+      ...(state.competitionId ? { metadata: { competition_id: state.competitionId } } : {}),
       sample_data: state.sampleData,
       schedule_timezone: state.scheduleTimezone || "",
       role_mapping: state.roleMapping,
