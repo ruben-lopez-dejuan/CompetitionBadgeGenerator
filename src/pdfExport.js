@@ -1,4 +1,4 @@
-import { PDFDocument, degrees, rgb, StandardFonts, pushGraphicsState, popGraphicsState, concatTransformationMatrix } from "pdf-lib";
+import { PDFDocument, degrees, rgb, StandardFonts, pushGraphicsState, popGraphicsState, concatTransformationMatrix, rectangle, clip, endPath } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
 import QRCode from "qrcode";
 import { buildCompetitorSchedules, buildMainSchedule, buildStageList, stagesForPerson, taskKeyRows } from "./schedule.js";
@@ -1061,7 +1061,32 @@ async function loadGoogleScriptFonts(pdfDoc, fonts, persons) {
 
 // ------------------------------------------------------------- background
 
-async function drawBackground(page, sideTpl, ctx, pdfDoc, pageWMm, pageHMm, imageCache) {
+// Crop marks: lines outside the badge, kept clear of the bleed, showing where
+// to cut.
+const CROP_MARK_MM = 5;
+const CROP_MARK_GAP_MM = 2;
+const CROP_MARK_WIDTH = 0.25;
+
+const cropMarkGapMm = (bleedMm) => Math.max(bleedMm, CROP_MARK_GAP_MM);
+
+function drawCropMarks(page, w, h, bleedMm) {
+  const from = mmv(cropMarkGapMm(bleedMm));
+  const to = from + mmv(CROP_MARK_MM);
+  const line = (x1, y1, x2, y2) => page.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, thickness: CROP_MARK_WIDTH, color: rgb(0, 0, 0) });
+  for (const x of [0, w]) {
+    line(x, -to, x, -from);
+    line(x, h + from, x, h + to);
+  }
+  for (const y of [0, h]) {
+    line(-to, y, -from, y);
+    line(w + from, y, w + to, y);
+  }
+}
+
+// bleed: { mm, included }. Without `included`, the image covers the badge as
+// always and its mirrored edges fill the bleed around it. With it, the image
+// covers the badge and its bleed (the editor shows the same, cut to size).
+async function drawBackground(page, sideTpl, ctx, pdfDoc, pageWMm, pageHMm, imageCache, bleed) {
   const bgMap = sideTpl.backgroundMap;
   let finalDataUrl = null;
 
@@ -1091,10 +1116,28 @@ async function drawBackground(page, sideTpl, ctx, pdfDoc, pageWMm, pageHMm, imag
   }
 
   if (!finalDataUrl) return;
-  const embedded = await embedImageCached(pdfDoc, finalDataUrl, imageCache, { width: mmv(pageWMm), height: mmv(pageHMm) });
-  if (embedded) {
-    page.drawImage(embedded, { x: 0, y: 0, width: mmv(pageWMm), height: mmv(pageHMm) });
+  const w = mmv(pageWMm);
+  const h = mmv(pageHMm);
+  const embedded = await embedImageCached(pdfDoc, finalDataUrl, imageCache, { width: w, height: h });
+  if (!embedded) return;
+  const b = mmv(bleed.mm);
+  if (b > 0 && bleed.included) {
+    page.drawImage(embedded, { x: -b, y: -b, width: w + 2 * b, height: h + 2 * b });
+    return;
   }
+  if (b > 0) {
+    // The 8 copies around the badge, each a reflection across its edges.
+    const across = (size) => [[-1, 0], [1, 0], [-1, 2 * size]]; // scale and offset: before, on and after the badge
+    for (const [sx, dx] of across(w)) {
+      for (const [sy, dy] of across(h)) {
+        if (sx === 1 && sy === 1) continue;
+        page.pushOperators(pushGraphicsState(), concatTransformationMatrix(sx, 0, 0, sy, dx, dy));
+        page.drawImage(embedded, { x: 0, y: 0, width: w, height: h });
+        page.pushOperators(popGraphicsState());
+      }
+    }
+  }
+  page.drawImage(embedded, { x: 0, y: 0, width: w, height: h });
 }
 
 // --------------------------------------------------------------- person ctx
@@ -1158,9 +1201,10 @@ function buildPersonContext(person, sampleData, competitorSchedules, stages, rol
  * @param {(done:number,total:number)=>void} [onProgress]
  * @param {object} [parts]  - people: false leaves out the competition's
  *   people; extraGroups: groups of extra badges (see extraBadges.js), added
- *   after them. Without people, wcif can be null.
+ *   after them. Without people, wcif can be null. cropMarks: draw them
+ *   around each badge.
  */
-export async function generateBadgesPdf(state, wcif, onProgress, { people = true, extraGroups = [] } = {}) {
+export async function generateBadgesPdf(state, wcif, onProgress, { people = true, extraGroups = [], cropMarks = false } = {}) {
   const pdfDoc = await PDFDocument.create();
   pdfDoc.registerFontkit(fontkit);
 
@@ -1234,10 +1278,22 @@ export async function generateBadgesPdf(state, wcif, onProgress, { people = true
 
   const imageCache = new Map();
 
+  // Pages keep the badge's corner at (0, 0); bleed and crop marks go outside.
+  const bleed = { mm: state.bleedMm || 0, included: state.bleedFill === "included" };
+  const bleedPt = mmv(bleed.mm);
+  const marginPt = cropMarks ? mmv(cropMarkGapMm(bleed.mm) + CROP_MARK_MM + 1) : bleedPt;
+
   const renderSide = async (sideTpl) => {
     const pageWMm = sideTpl.page.width_mm;
     const pageHMm = sideTpl.page.height_mm;
     const page = pdfDoc.addPage([mmv(pageWMm), mmv(pageHMm)]);
+    if (marginPt > 0) {
+      const w = mmv(pageWMm);
+      const h = mmv(pageHMm);
+      page.setMediaBox(-marginPt, -marginPt, w + 2 * marginPt, h + 2 * marginPt);
+      page.setBleedBox(-bleedPt, -bleedPt, w + 2 * bleedPt, h + 2 * bleedPt);
+      page.setTrimBox(0, 0, w, h);
+    }
     // A page nothing is drawn on has no content, and couldn't be imposed.
     page.pushOperators(pushGraphicsState(), popGraphicsState());
     return { page, pageWMm, pageHMm };
@@ -1251,7 +1307,12 @@ export async function generateBadgesPdf(state, wcif, onProgress, { people = true
       const sideTpl = sides[sideKey];
       const { page, pageWMm, pageHMm } = await renderSide(sideTpl);
 
-      await drawBackground(page, { background: sideTpl.background, tint: sideTpl.tint, backgroundMap: sideTpl.backgroundMap }, ctx, pdfDoc, pageWMm, pageHMm, imageCache);
+      if (marginPt > 0) {
+        // Nothing past the bleed, where the crop marks go.
+        page.pushOperators(pushGraphicsState(), rectangle(-bleedPt, -bleedPt, mmv(pageWMm) + 2 * bleedPt, mmv(pageHMm) + 2 * bleedPt), clip(), endPath());
+      }
+
+      await drawBackground(page, { background: sideTpl.background, tint: sideTpl.tint, backgroundMap: sideTpl.backgroundMap }, ctx, pdfDoc, pageWMm, pageHMm, imageCache, bleed);
 
       for (const field of sideTpl.fields) {
         const rotateDeg = field.rotate || 0;
@@ -1282,6 +1343,9 @@ export async function generateBadgesPdf(state, wcif, onProgress, { people = true
           await runDraw(pivotX, pivotY);
         }
       }
+
+      if (marginPt > 0) page.pushOperators(popGraphicsState());
+      if (cropMarks) drawCropMarks(page, mmv(pageWMm), mmv(pageHMm), bleed.mm);
     }
 
     if (onProgress) onProgress(idx + 1, badges.length);
@@ -1305,11 +1369,19 @@ export function eightPerSheetLayout(badgeW, badgeH) {
 // Turns a generateBadgesPdf() file (front, back, front, back...) into sheets
 // of 8 fronts, each followed by a sheet with their 8 backs, for double-sided
 // printing flipped on the short edge. The grid is centered, so a back lands
-// exactly behind its front on both sides of the sheet.
-export async function imposeEightPerSheet(bytes) {
+// exactly behind its front on both sides of the sheet. Pages can have bleed; crop marks
+// are drawn here, around the grid, as far as the sheet's margin allows.
+export async function imposeEightPerSheet(bytes, { bleedMm = 0, cropMarks = false } = {}) {
   const source = await PDFDocument.load(bytes);
   const out = await PDFDocument.create();
-  const pages = await out.embedPdf(bytes, source.getPageIndices());
+  const sourcePages = source.getPages();
+  const pages = await out.embedPages(
+    sourcePages,
+    sourcePages.map((p) => {
+      const { x, y, width, height } = p.getMediaBox();
+      return { left: x, bottom: y, right: x + width, top: y + height };
+    })
+  );
 
   const cellW = Math.max(...pages.map((p) => p.width));
   const cellH = Math.max(...pages.map((p) => p.height));
@@ -1330,11 +1402,39 @@ export async function imposeEightPerSheet(bytes) {
     else sheet.drawPage(page, { x, y });
   };
 
+  const drawMarks = (sheet, page) => {
+    const insetX = (cellW - page.width) / 2 + mmv(bleedMm);
+    const insetY = (cellH - page.height) / 2 + mmv(bleedMm);
+    const line = (x1, y1, x2, y2) => sheet.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, thickness: CROP_MARK_WIDTH, color: rgb(0, 0, 0) });
+    // From the grid's edge, leaving a small gap, towards the sheet's edge.
+    const gap = mmv(1);
+    const lengthY = Math.min(mmv(CROP_MARK_MM), marginY - gap);
+    const lengthX = Math.min(mmv(CROP_MARK_MM), marginX - gap);
+    for (let col = 0; col < cols; col++) {
+      for (const x of [marginX + col * cellW + insetX, marginX + (col + 1) * cellW - insetX]) {
+        if (lengthY <= 0) continue;
+        line(x, marginY - gap, x, marginY - gap - lengthY);
+        line(x, sheetH - marginY + gap, x, sheetH - marginY + gap + lengthY);
+      }
+    }
+    for (let row = 0; row < rows; row++) {
+      for (const y of [marginY + row * cellH + insetY, marginY + (row + 1) * cellH - insetY]) {
+        if (lengthX <= 0) continue;
+        line(marginX - gap, y, marginX - gap - lengthX, y);
+        line(sheetW - marginX + gap, y, sheetW - marginX + gap + lengthX, y);
+      }
+    }
+  };
+
   const perSheet = cols * rows;
   const badgeCount = Math.ceil(pages.length / 2);
   for (let first = 0; first < badgeCount; first += perSheet) {
     const frontSheet = out.addPage([sheetW, sheetH]);
     const backSheet = out.addPage([sheetW, sheetH]);
+    if (cropMarks) {
+      drawMarks(frontSheet, pages[0]);
+      drawMarks(backSheet, pages[1] || pages[0]);
+    }
     for (let i = 0; i < perSheet && first + i < badgeCount; i++) {
       const col = i % cols;
       const row = Math.floor(i / cols);
