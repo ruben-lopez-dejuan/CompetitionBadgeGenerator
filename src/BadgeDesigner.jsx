@@ -59,7 +59,7 @@ import { generateBadgesPdf, downloadPdfBytes, eightPerSheetLayout, imposeEightPe
 import defaultTemplate from "./defaultTemplate.json";
 import { applyTextCase, DEFAULT_FRAME, layoutTextFrame, shrinkToWidth } from "./textLayout.js";
 import { FULL_CROP, isFullCrop, normalizeCrop, placeImage } from "./imageCrop.js";
-import { addRolesFromPersons, countByRule, teamsWithoutRule } from "./roles.js";
+import { addRolesFromPersons, countByRule, personRole, teamsWithoutRule } from "./roles.js";
 import { pickMappedLabel } from "./valueMap.js";
 import { useHistory } from "./editor/useHistory.js";
 import ShortcutsDialog from "./editor/ShortcutsDialog.jsx";
@@ -3332,6 +3332,23 @@ function RoleMappingPanel({ roleMapping, onChange, persons }) {
   const people = (n) => `${n} ${n === 1 ? "person" : "people"}`;
   const teams = persons ? teamsWithoutRule(roleMapping, persons) : [];
 
+  const overrides = roleMapping.overrides || [];
+  const [personQuery, setPersonQuery] = useState("");
+  // The role values in use, to pick one for a person.
+  const roleValues = [...new Set([...rules.map((r) => r.label || r.wcaRole), roleMapping.fallback || "competitor", ...overrides.map((o) => o.role)].filter(Boolean))];
+  const byId = new Map((persons || []).map((p) => [String(p.registrantId), p]));
+  const query = personQuery.trim().toLowerCase();
+  const matches = query
+    ? (persons || []).filter((p) => !overrides.some((o) => String(o.registrantId) === String(p.registrantId)) && [p.name, p.wcaId, String(p.registrantId)].some((v) => v && v.toLowerCase().includes(query))).slice(0, 8)
+    : [];
+  const addOverride = (p) => {
+    // Starts with the role the rules give, to change from there.
+    onChange({ overrides: [...overrides, { registrantId: p.registrantId, name: p.name, role: personRole(p, { ...roleMapping, overrides: [] }) }] });
+    setPersonQuery("");
+  };
+  const updateOverride = (i, role) => onChange({ overrides: overrides.map((o, idx) => (idx === i ? { ...o, role } : o)) });
+  const removeOverride = (i) => onChange({ overrides: overrides.filter((_, idx) => idx !== i) });
+
   const addTeams = (list) => onChange({ rules: [...rules, ...list.map((t) => ({ wcaRole: t.wcaRole, label: "staff" }))] });
   const updateRule = (i, patch) => onChange({ rules: rules.map((r, idx) => (idx === i ? { ...r, ...patch } : r)) });
   const addRule = () => onChange({ rules: [...rules, { wcaRole: "", label: "" }] });
@@ -3418,6 +3435,61 @@ function RoleMappingPanel({ roleMapping, onChange, persons }) {
           placeholder="competitor"
           className="w-full text-sm px-2 py-1.5 border border-neutral-300 rounded-md"
         />
+      </div>
+
+      <div className="space-y-1.5">
+        <div className="text-[11px] font-semibold text-neutral-600">People with a role of their own</div>
+        <div className="text-[10px] text-neutral-400">Only for their badges: the role value given here wins over the rules. The WCIF isn't changed.</div>
+        <datalist id="role-values">
+          {roleValues.map((v) => (
+            <option key={v} value={v} />
+          ))}
+        </datalist>
+        {overrides.map((o, i) => {
+          const p = byId.get(String(o.registrantId));
+          const missing = persons && !p;
+          return (
+            <div key={o.registrantId} className="flex items-center gap-1.5">
+              <span className={`flex-1 text-xs truncate min-w-0 ${missing ? "text-neutral-400 line-through" : ""}`} title={missing ? "Not in the loaded competition" : `ID ${o.registrantId}${p?.wcaId ? ` · ${p.wcaId}` : ""}`}>
+                {p?.name || o.name}
+              </span>
+              <span className="text-neutral-300 text-xs">→</span>
+              <input
+                value={o.role}
+                list="role-values"
+                onChange={(e) => updateOverride(i, e.target.value)}
+                placeholder="role value"
+                className="flex-1 text-xs px-2 py-1 border border-neutral-300 rounded-md min-w-0"
+              />
+              <button onClick={() => removeOverride(i)} className="text-neutral-400 hover:text-red-500 shrink-0" aria-label={`Remove ${o.name}`}>
+                <Trash2 size={12} />
+              </button>
+            </div>
+          );
+        })}
+        {persons ? (
+          <div>
+            <input
+              value={personQuery}
+              onChange={(e) => setPersonQuery(e.target.value)}
+              placeholder="Add a person: name, WCA ID or ID"
+              className="w-full text-xs px-2 py-1.5 border border-neutral-300 rounded-md"
+            />
+            {matches.length > 0 && (
+              <div className="mt-1 border border-neutral-200 rounded-md divide-y divide-neutral-100">
+                {matches.map((p) => (
+                  <button key={p.registrantId} onClick={() => addOverride(p)} className="w-full flex items-center gap-2 px-2 py-1 text-left text-xs hover:bg-blue-50">
+                    <span className="flex-1 truncate">{p.name}</span>
+                    <span className="text-neutral-400 shrink-0">{personRole(p, roleMapping)}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {query && matches.length === 0 && <div className="mt-1 text-[11px] text-neutral-400">Nobody else matches.</div>}
+          </div>
+        ) : (
+          <div className="text-[11px] text-neutral-400">Load the competition to add people.</div>
+        )}
       </div>
 
       <div className="text-[10px] text-neutral-400">

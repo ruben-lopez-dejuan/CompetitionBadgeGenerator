@@ -5,6 +5,9 @@
 // matches people who have all of them — that's how someone with more than
 // one role gets a value of their own. "team:<name>" matches the
 // person's team instead of a role (see personTeamRole).
+//
+// mapping.overrides gives some people a role value of their own, before any
+// rule: [{ registrantId, name, role }]. The name is only for showing it.
 
 // Order used when listing roles and building combination names: the
 // "most important" role first.
@@ -57,6 +60,14 @@ function isTeamRule(rule) {
   return ruleRoles(rule.wcaRole).some((r) => r.startsWith(TEAM_PREFIX));
 }
 
+// The role value given to this person by hand, or null.
+export function overriddenRole(person, mapping) {
+  const id = person.registrantId;
+  if (id === undefined || id === null) return null;
+  const o = (mapping.overrides || []).find((x) => String(x.registrantId) === String(id));
+  return o ? o.role : null;
+}
+
 /**
  * Teams of the people no rule matches, to offer rules for them:
  * [{ wcaRole: "team:Streaming", name, count }], biggest first. Not added on
@@ -67,7 +78,7 @@ export function teamsWithoutRule(mapping, persons) {
   for (const p of persons) {
     const team = personTeamRole(p);
     const roles = matchableRoles(p);
-    if (team && !(mapping.rules || []).some((rule) => ruleMatches(rule, roles))) counts[team] = (counts[team] || 0) + 1;
+    if (team && overriddenRole(p, mapping) === null && !(mapping.rules || []).some((rule) => ruleMatches(rule, roles))) counts[team] = (counts[team] || 0) + 1;
   }
   return Object.entries(counts)
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
@@ -80,6 +91,8 @@ export function ruleMatches(rule, personRoles) {
 }
 
 export function personRole(person, mapping) {
+  const own = overriddenRole(person, mapping);
+  if (own !== null) return own;
   const roles = matchableRoles(person);
   for (const rule of mapping.rules || []) {
     if (ruleMatches(rule, roles)) return rule.label || rule.wcaRole;
@@ -118,11 +131,13 @@ export function addRolesFromPersons(mapping, persons) {
 }
 
 // How many of `persons` each rule catches (first match wins), plus how
-// many fall through to the fallback.
+// many fall through to the fallback. People with a role of their own
+// (overrides) count in neither.
 export function countByRule(mapping, persons) {
   const counts = (mapping.rules || []).map(() => 0);
   let fallback = 0;
   for (const p of persons) {
+    if (overriddenRole(p, mapping) !== null) continue;
     const i = (mapping.rules || []).findIndex((rule) => ruleMatches(rule, matchableRoles(p)));
     if (i === -1) fallback++;
     else counts[i]++;
